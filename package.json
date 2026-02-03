@@ -1,6 +1,6 @@
 {
 	"name": "roo-code",
-	"packageManager": "pnpm@10.8.1",
+	"packageManager": "pnpm@10.28.1",
 	"engines": {
 		"node": "20.19.2"
 	},
@@ -55,7 +55,15 @@
 	},
 	"pnpm": {
 		"onlyBuiltDependencies": [
-			"@vscode/ripgrep"
+			"@tailwindcss/oxide",
+			"@vscode/ripgrep",
+			"@vscode/vsce-sign",
+			"better-sqlite3",
+			"core-js",
+			"esbuild",
+			"keytar",
+			"puppeteer-chromium-resolver",
+			"sharp"
 		],
 		"overrides": {
 			"tar-fs": ">=3.1.1",

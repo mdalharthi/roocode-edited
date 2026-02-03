@@ -14,6 +14,7 @@ import { CodeIndexManager } from "../services/code-index/manager"
 import { importSettingsWithFeedback } from "../core/config/importExport"
 import { MdmService } from "../services/mdm/MdmService"
 import { t } from "../i18n"
+import { logActivationCompleted } from "../services/logging/helpers/taskLifecycleLogger"
 
 /**
  * Helper to get the visible ClineProvider instance or log if not found.
@@ -71,7 +72,9 @@ export const registerCommands = (options: RegisterCommandOptions) => {
 }
 
 const getCommandsMap = ({ context, outputChannel, provider }: RegisterCommandOptions): Record<CommandId, any> => ({
-	activationCompleted: () => {},
+	activationCompleted: async () => {
+		await logActivationCompleted()
+	},
 	cloudButtonClicked: () => {
 		const visibleProvider = getVisibleProviderOrLog(outputChannel)
 

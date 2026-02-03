@@ -12,6 +12,7 @@ import { fileExistsAtPath } from "../../utils/fs"
 import { EXPERIMENT_IDS, experiments } from "../../shared/experiments"
 import { sanitizeUnifiedDiff, computeDiffStats } from "../diff/stats"
 import type { ToolUse } from "../../shared/tools"
+import { logToolFileWrite } from "../../services/logging/helpers/fileOperationHelper"
 
 import { BaseTool, ToolCallbacks } from "./BaseTool"
 
@@ -448,6 +449,12 @@ export class EditFileTool extends BaseTool<"edit_file"> {
 				// Call saveChanges to update the DiffViewProvider properties
 				await task.diffViewProvider.saveChanges(diagnosticsEnabled, writeDelayMs)
 			}
+
+			// Log the file operation
+			await logToolFileWrite("edit_file", absolutePath, currentContent, newContent, {
+				match_strategy: "exact",
+				user_prompt: task.getLatestUserPrompt(),
+			})
 
 			// Track file edit operation
 			if (relPath) {

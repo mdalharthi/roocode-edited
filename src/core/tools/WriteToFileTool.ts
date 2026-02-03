@@ -15,6 +15,7 @@ import { unescapeHtmlEntities } from "../../utils/text-normalization"
 import { EXPERIMENT_IDS, experiments } from "../../shared/experiments"
 import { convertNewFileToUnifiedDiff, computeDiffStats, sanitizeUnifiedDiff } from "../diff/stats"
 import type { ToolUse } from "../../shared/tools"
+import { logToolFileWrite } from "../../services/logging/helpers/fileOperationHelper"
 
 import { BaseTool, ToolCallbacks } from "./BaseTool"
 
@@ -67,6 +68,16 @@ export class WriteToFileTool extends BaseTool<"write_to_file"> {
 			task.diffViewProvider.editType = fileExists ? "modify" : "create"
 		}
 
+		// Capture original content before writing (for logging)
+		let originalContent: string | null = null
+		if (fileExists) {
+			try {
+				originalContent = await fs.readFile(absolutePath, "utf-8")
+			} catch (error) {
+				// Ignore if read fails
+			}
+		}
+
 		// Create parent directories early for new files to prevent ENOENT errors
 		// in subsequent operations (e.g., diffViewProvider.open, fs.readFile)
 		if (!fileExists) {
@@ -111,8 +122,7 @@ export class WriteToFileTool extends BaseTool<"write_to_file"> {
 			if (isPreventFocusDisruptionEnabled) {
 				task.diffViewProvider.editType = fileExists ? "modify" : "create"
 				if (fileExists) {
-					const absolutePath = path.resolve(task.cwd, relPath)
-					task.diffViewProvider.originalContent = await fs.readFile(absolutePath, "utf-8")
+					task.diffViewProvider.originalContent = originalContent || ""
 				} else {
 					task.diffViewProvider.originalContent = ""
 				}
@@ -168,6 +178,11 @@ export class WriteToFileTool extends BaseTool<"write_to_file"> {
 
 				await task.diffViewProvider.saveChanges(diagnosticsEnabled, writeDelayMs)
 			}
+
+			// Log the file operation
+			await logToolFileWrite("write_to_file", absolutePath, originalContent, newContent, {
+				user_prompt: task.getLatestUserPrompt(),
+			})
 
 			if (relPath) {
 				await task.fileContextTracker.trackFileContext(relPath, "roo_edited" as RecordSource)

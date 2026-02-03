@@ -62,6 +62,7 @@ import { GetModelsOptions } from "../../shared/api"
 import { generateSystemPrompt } from "./generateSystemPrompt"
 import { resolveDefaultSaveUri, saveLastExportPath } from "../../utils/export"
 import { getCommand } from "../../utils/commands"
+import { logCreateTask, logCancelTask } from "../../services/logging/helpers/taskLifecycleLogger"
 
 const ALLOWED_VSCODE_SETTINGS = new Set(["terminal.integrated.inheritEnv"])
 
@@ -538,18 +539,24 @@ export const webviewMessageHandler = async (
 			// Initializing new instance of Cline will make sure that any
 			// agentically running promises in old instance don't affect our new
 			// task. This essentially creates a fresh slate for the new task.
-			try {
-				const resolved = await resolveIncomingImages({ text: message.text, images: message.images })
-				await provider.createTask(resolved.text, resolved.images)
-				// Task created successfully - notify the UI to reset
-				await provider.postMessageToWebview({ type: "invoke", invoke: "newChat" })
-			} catch (error) {
-				// For all errors, reset the UI and show error
-				await provider.postMessageToWebview({ type: "invoke", invoke: "newChat" })
-				// Show error to user
-				vscode.window.showErrorMessage(
-					`Failed to create task: ${error instanceof Error ? error.message : String(error)}`,
-				)
+			{
+				const logger = await logCreateTask({ text: message.text, hasImages: !!message.images?.length })
+
+				try {
+					const resolved = await resolveIncomingImages({ text: message.text, images: message.images })
+					await provider.createTask(resolved.text, resolved.images)
+					// Task created successfully - notify the UI to reset
+					await provider.postMessageToWebview({ type: "invoke", invoke: "newChat" })
+					await logger.success({ status: "success" })
+				} catch (error) {
+					await logger.error(error as Error)
+					// For all errors, reset the UI and show error
+					await provider.postMessageToWebview({ type: "invoke", invoke: "newChat" })
+					// Show error to user
+					vscode.window.showErrorMessage(
+						`Failed to create task: ${error instanceof Error ? error.message : String(error)}`,
+					)
+				}
 			}
 			break
 		case "customInstructions":
@@ -1212,7 +1219,11 @@ export const webviewMessageHandler = async (
 			break
 		}
 		case "cancelTask":
-			await provider.cancelTask()
+			{
+				const logger = await logCancelTask()
+				await provider.cancelTask()
+				await logger.success()
+			}
 			break
 		case "cancelAutoApproval":
 			// Cancel any pending auto-approval timeout for the current task

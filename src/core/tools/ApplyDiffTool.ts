@@ -13,6 +13,7 @@ import { unescapeHtmlEntities } from "../../utils/text-normalization"
 import { EXPERIMENT_IDS, experiments } from "../../shared/experiments"
 import { computeDiffStats, sanitizeUnifiedDiff } from "../diff/stats"
 import type { ToolUse } from "../../shared/tools"
+import { logToolFileWrite } from "../../services/logging/helpers/fileOperationHelper"
 
 import { BaseTool, ToolCallbacks } from "./BaseTool"
 
@@ -221,6 +222,11 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 				// Call saveChanges to update the DiffViewProvider properties
 				await task.diffViewProvider.saveChanges(diagnosticsEnabled, writeDelayMs)
 			}
+
+			// Log the file operation
+			await logToolFileWrite("apply_diff", absolutePath, originalContent, diffResult.content, {
+				user_prompt: task.getLatestUserPrompt(),
+			})
 
 			// Track file edit operation
 			if (relPath) {

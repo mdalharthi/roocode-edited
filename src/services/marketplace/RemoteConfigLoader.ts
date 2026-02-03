@@ -9,6 +9,7 @@ import {
 	mcpMarketplaceItemSchema,
 } from "@roo-code/types"
 import { getRooCodeApiUrl } from "@roo-code/cloud"
+import { BackendApiLogger } from "../logging/BackendApiLogger"
 
 const modeMarketplaceResponse = z.object({
 	items: z.array(modeMarketplaceItemSchema),
@@ -87,6 +88,7 @@ export class RemoteConfigLoader {
 		let lastError: Error
 
 		for (let i = 0; i < maxRetries; i++) {
+			const startTime = Date.now()
 			try {
 				const response = await axios.get(url, {
 					timeout: 10000, // 10 second timeout
@@ -95,9 +97,31 @@ export class RemoteConfigLoader {
 						"Content-Type": "application/json",
 					},
 				})
+
+				// Log successful request
+				const duration = Date.now() - startTime
+				await BackendApiLogger.logRequest("GET", url, response.status, duration, {
+					responseBody: response.data,
+				})
+
 				return response.data as T
 			} catch (error) {
+				const duration = Date.now() - startTime
 				lastError = error as Error
+
+				// Log failed request
+				let status = 0
+				let responseBody = undefined
+				if (axios.isAxiosError(error) && error.response) {
+					status = error.response.status
+					responseBody = error.response.data
+				}
+
+				await BackendApiLogger.logRequest("GET", url, status, duration, {
+					error: lastError,
+					responseBody,
+				})
+
 				if (i < maxRetries - 1) {
 					// Exponential backoff: 1s, 2s, 4s
 					const delay = Math.pow(2, i) * 1000

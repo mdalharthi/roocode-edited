@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  # Backend API
+  backend:
+    image: quaynonprod.alinma.internal/alinmagpt/code-assistant-backend:1.0.1
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: code-assistant-backend
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped

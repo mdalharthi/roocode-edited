@@ -131,11 +131,22 @@ import { AutoApprovalHandler, checkAutoApproval } from "../auto-approval"
 import { MessageManager } from "../message-manager"
 import { validateAndFixToolResultIds } from "./validateToolResultIds"
 import { mergeConsecutiveApiMessages } from "./mergeConsecutiveApiMessages"
+import { logTaskStreamingApiCall, PerformanceTimer } from "../../services/logging/helpers/apiCallLogger"
+
+import {
+	logUserPrompt,
+	logSystemMessage,
+	logTaskCreation,
+	logInteraction,
+} from "../../services/logging/helpers/userInteractionLogger"
+import { logApiProviderConfig } from "../../services/logging/helpers/apiProviderLogger"
 
 const MAX_EXPONENTIAL_BACKOFF_SECONDS = 600 // 10 minutes
 const DEFAULT_USAGE_COLLECTION_TIMEOUT_MS = 5000 // 5 seconds
 const FORCED_CONTEXT_REDUCTION_PERCENT = 75 // Keep 75% of context (remove 25%) on context window errors
 const MAX_CONTEXT_WINDOW_RETRIES = 3 // Maximum retries for context window errors
+
+import { PerformanceLogger } from "../../services/logging/PerformanceLogger"
 
 export interface TaskOptions extends CreateTaskOptions {
 	provider: ClineProvider
@@ -589,6 +600,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				throw new Error("Either historyItem or task/images must be provided")
 			}
 		}
+
+		// Log initial API provider configuration
+		void logApiProviderConfig(this.apiConfiguration)
 	}
 
 	/**
@@ -798,6 +812,23 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * @returns Promise that resolves when the task API config name is initialized
 	 * @public
 	 */
+	public async waitForApiConfigNameInitialization(): Promise<void> {
+		return this.taskApiConfigReady
+	}
+
+	/**
+	 * Get the text content of the last user message ("ask").
+	 * Used for logging context.
+	 */
+	public getLatestUserPrompt(): string | undefined {
+		for (let i = this.clineMessages.length - 1; i >= 0; i--) {
+			const message = this.clineMessages[i]
+			if (message.type === "ask" && message.text) {
+				return message.text
+			}
+		}
+		return undefined
+	}
 	public async waitForApiConfigInitialization(): Promise<void> {
 		return this.taskApiConfigReady
 	}
@@ -1324,6 +1355,27 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			timeouts.push(this.autoApprovalTimeoutRef)
 		}
 
+		// The state is mutable if the message is complete and
+		// not partial, or if it is a new partial message.
+
+		const isUpdatingPreviousPartial =
+			partial !== undefined &&
+			this.clineMessages.at(-1)?.partial &&
+			this.clineMessages.at(-1)?.type === "ask" &&
+			this.clineMessages.at(-1)?.ask === type
+
+		if (askTs && !isUpdatingPreviousPartial) {
+			// Log the user question/prompt
+			void logSystemMessage(text || "", "system_notification", {
+				sessionId: this.taskId,
+				metadata: {
+					ask_type: type,
+					is_partial: partial,
+					is_protected: isProtected,
+				},
+			})
+		}
+
 		// The state is mutable if the message is complete and the task will
 		// block (via the `pWaitFor`).
 		const isBlocking = !(this.askResponse !== undefined || this.lastMessageTs !== askTs)
@@ -1454,6 +1506,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// Clear any pending auto-approval timeout when user responds
 		this.cancelAutoApprovalTimeout()
 
+		// Log user response
+		void logInteraction("user_response", "webview", askResponse, {
+			sessionId: this.taskId,
+			metadata: {
+				response_text_length: text ? text.length : 0,
+				has_images: !!(images && images.length > 0),
+			},
+		})
+
 		this.askResponse = askResponse
 		this.askResponseText = text
 		this.askResponseImages = images
@@ -1517,6 +1578,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// Update the configuration and rebuild the API handler
 		this.apiConfiguration = newApiConfiguration
 		this.api = buildApiHandler(this.apiConfiguration)
+
+		// Log updated API provider configuration
+		void logApiProviderConfig(this.apiConfiguration)
 	}
 
 	public async submitUserMessage(
@@ -1790,6 +1854,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			})
 		}
 
+		// Log system message
+		if (!partial && type !== "browser_action" && type !== "browser_action_result") {
+			void logSystemMessage(text || "", type === "error" ? "error" : "assistant_response", {
+				sessionId: this.taskId,
+				metadata: {
+					say_type: type,
+					has_images: !!(images && images.length > 0),
+					image_count: images ? images.length : 0,
+				},
+			})
+		}
+
 		// Broadcast browser session updates to panel when browser-related messages are added
 		if (type === "browser_action" || type === "browser_action_result" || type === "browser_session_status") {
 			this.broadcastBrowserSessionUpdate()
@@ -1841,77 +1917,94 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	private async startTask(task?: string, images?: string[]): Promise<void> {
-		try {
-			if (this.enableBridge) {
+		return PerformanceLogger.measure(
+			"startTask",
+			"task_lifecycle",
+			async () => {
 				try {
-					await BridgeOrchestrator.subscribeToTask(this)
+					if (this.enableBridge) {
+						try {
+							await BridgeOrchestrator.subscribeToTask(this)
+						} catch (error) {
+							console.error(
+								`[Task#startTask] BridgeOrchestrator.subscribeToTask() failed: ${error instanceof Error ? error.message : String(error)}`,
+							)
+						}
+					}
+
+					// `conversationHistory` (for API) and `clineMessages` (for webview)
+					// need to be in sync.
+					// If the extension process were killed, then on restart the
+					// `clineMessages` might not be empty, so we need to set it to [] when
+					// we create a new Cline client (otherwise webview would show stale
+					// messages from previous session).
+					this.clineMessages = []
+					this.apiConversationHistory = []
+
+					// The todo list is already set in the constructor if initialTodos were provided
+					// No need to add any messages - the todoList property is already set
+
+					await this.providerRef.deref()?.postStateToWebviewWithoutTaskHistory()
+
+					await this.say("text", task, images)
+
+					// Log task creation
+					if (task) {
+						void logTaskCreation(task, images, {
+							sessionId: this.taskId,
+							metadata: {
+								initial_images_count: images ? images.length : 0,
+							},
+						})
+					}
+
+					// Check for too many MCP tools and warn the user
+					const { enabledToolCount, enabledServerCount } = await this.getEnabledMcpToolsCount()
+					if (enabledToolCount > MAX_MCP_TOOLS_THRESHOLD) {
+						await this.say(
+							"too_many_tools_warning",
+							JSON.stringify({
+								toolCount: enabledToolCount,
+								serverCount: enabledServerCount,
+								threshold: MAX_MCP_TOOLS_THRESHOLD,
+							}),
+							undefined,
+							undefined,
+							undefined,
+							undefined,
+							{ isNonInteractive: true },
+						)
+					}
+					this.isInitialized = true
+
+					const imageBlocks: Anthropic.ImageBlockParam[] = formatResponse.imageBlocks(images)
+
+					// Task starting
+					await this.initiateTaskLoop([
+						{
+							type: "text",
+							text: `<user_message>\n${task}\n</user_message>`,
+						},
+						...imageBlocks,
+					]).catch((error) => {
+						// Swallow loop rejection when the task was intentionally abandoned/aborted
+						// during delegation or user cancellation to prevent unhandled rejections.
+						if (this.abandoned === true || this.abortReason === "user_cancelled") {
+							return
+						}
+						throw error
+					})
 				} catch (error) {
-					console.error(
-						`[Task#startTask] BridgeOrchestrator.subscribeToTask() failed: ${error instanceof Error ? error.message : String(error)}`,
-					)
+					// In tests and some UX flows, tasks can be aborted while `startTask` is still
+					// initializing. Treat abort/abandon as expected and avoid unhandled rejections.
+					if (this.abandoned === true || this.abort === true || this.abortReason === "user_cancelled") {
+						return
+					}
+					throw error
 				}
-			}
-
-			// `conversationHistory` (for API) and `clineMessages` (for webview)
-			// need to be in sync.
-			// If the extension process were killed, then on restart the
-			// `clineMessages` might not be empty, so we need to set it to [] when
-			// we create a new Cline client (otherwise webview would show stale
-			// messages from previous session).
-			this.clineMessages = []
-			this.apiConversationHistory = []
-
-			// The todo list is already set in the constructor if initialTodos were provided
-			// No need to add any messages - the todoList property is already set
-
-			await this.providerRef.deref()?.postStateToWebviewWithoutTaskHistory()
-
-			await this.say("text", task, images)
-
-			// Check for too many MCP tools and warn the user
-			const { enabledToolCount, enabledServerCount } = await this.getEnabledMcpToolsCount()
-			if (enabledToolCount > MAX_MCP_TOOLS_THRESHOLD) {
-				await this.say(
-					"too_many_tools_warning",
-					JSON.stringify({
-						toolCount: enabledToolCount,
-						serverCount: enabledServerCount,
-						threshold: MAX_MCP_TOOLS_THRESHOLD,
-					}),
-					undefined,
-					undefined,
-					undefined,
-					undefined,
-					{ isNonInteractive: true },
-				)
-			}
-			this.isInitialized = true
-
-			const imageBlocks: Anthropic.ImageBlockParam[] = formatResponse.imageBlocks(images)
-
-			// Task starting
-			await this.initiateTaskLoop([
-				{
-					type: "text",
-					text: `<user_message>\n${task}\n</user_message>`,
-				},
-				...imageBlocks,
-			]).catch((error) => {
-				// Swallow loop rejection when the task was intentionally abandoned/aborted
-				// during delegation or user cancellation to prevent unhandled rejections.
-				if (this.abandoned === true || this.abortReason === "user_cancelled") {
-					return
-				}
-				throw error
-			})
-		} catch (error) {
-			// In tests and some UX flows, tasks can be aborted while `startTask` is still
-			// initializing. Treat abort/abandon as expected and avoid unhandled rejections.
-			if (this.abandoned === true || this.abort === true || this.abortReason === "user_cancelled") {
-				return
-			}
-			throw error
-		}
+			},
+			{ taskId: this.taskId, task: task },
+		)
 	}
 
 	private async resumeTaskFromHistory() {
@@ -4156,6 +4249,23 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.skipPrevResponseIdOnce = false
 
 		// The provider accepts reasoning items alongside standard messages; cast to the expected parameter type.
+		const timer = new PerformanceTimer()
+		let tokensUsed = 0
+		const userPrompt = this.getLatestUserPrompt()
+
+		// Capture request body for logging
+		const requestBody = {
+			systemPrompt: systemPrompt,
+			messages: cleanConversationHistory,
+			metadata: metadata,
+		}
+
+		// Response accumulation for logging
+		let responseTextContent = ""
+		let responseReasoning = ""
+		const responseToolCalls: any[] = []
+		let responseUsage: any = undefined
+
 		const stream = this.api.createMessage(
 			systemPrompt,
 			cleanConversationHistory as unknown as Anthropic.Messages.MessageParam[],
@@ -4186,11 +4296,25 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			})
 
 			const firstChunk = await Promise.race([firstChunkPromise, abortPromise])
+			if (firstChunk.value.type === "usage") {
+				const val = firstChunk.value as any
+				tokensUsed += (val.inputTokens || 0) + (val.outputTokens || 0)
+			}
 			yield firstChunk.value
 			this.isWaitingForFirstChunk = false
 		} catch (error) {
 			this.isWaitingForFirstChunk = false
 			this.currentRequestAbortController = undefined
+
+			await logTaskStreamingApiCall(
+				{ apiConfiguration: this.apiConfiguration, taskId: this.taskId, userPrompt },
+				timer.getDuration(),
+				tokensUsed,
+				error as Error,
+				requestBody,
+				undefined,
+			)
+
 			const isContextWindowExceededError = checkContextWindowExceededError(error)
 
 			// If it's a context window error and we haven't exceeded max retries for this error type
@@ -4249,11 +4373,51 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// (Needs to be placed outside of try/catch since it we want caller to
 		// handle errors not with api_req_failed as that is reserved for first
 		// chunk failures only.)
-		// This delegates to another generator or iterable object. In this case,
-		// it's saying "yield all remaining values from this iterator". This
-		// effectively passes along all subsequent chunks from the original
-		// stream.
-		yield* iterator
+		try {
+			for await (const chunk of iterator) {
+				if (chunk.type === "usage") {
+					const usage = chunk as any
+					tokensUsed += (usage.inputTokens || 0) + (usage.outputTokens || 0)
+					responseUsage = usage
+				} else if (chunk.type === "text") {
+					responseTextContent += (chunk as any).text || ""
+				} else if (chunk.type === "reasoning") {
+					responseReasoning += (chunk as any).text || ""
+				} else if (chunk.type === "tool_call_partial" || chunk.type === "tool_call_end") {
+					responseToolCalls.push(chunk)
+				}
+				yield chunk
+			}
+
+			await logTaskStreamingApiCall(
+				{ apiConfiguration: this.apiConfiguration, taskId: this.taskId, userPrompt },
+				timer.getDuration(),
+				tokensUsed,
+				undefined,
+				requestBody,
+				{
+					textContent: responseTextContent || undefined,
+					reasoning: responseReasoning || undefined,
+					toolCalls: responseToolCalls.length > 0 ? responseToolCalls : undefined,
+					usage: responseUsage,
+				},
+			)
+		} catch (error) {
+			await logTaskStreamingApiCall(
+				{ apiConfiguration: this.apiConfiguration, taskId: this.taskId, userPrompt },
+				timer.getDuration(),
+				tokensUsed,
+				error as Error,
+				requestBody,
+				{
+					textContent: responseTextContent || undefined,
+					reasoning: responseReasoning || undefined,
+					toolCalls: responseToolCalls.length > 0 ? responseToolCalls : undefined,
+					usage: responseUsage,
+				},
+			)
+			throw error
+		}
 	}
 
 	// Shared exponential backoff for retries (first-chunk and mid-stream)

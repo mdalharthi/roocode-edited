@@ -8,6 +8,7 @@ import { formatResponse } from "../prompts/responses"
 import { Package } from "../../shared/package"
 import type { ToolUse } from "../../shared/tools"
 import { t } from "../../i18n"
+import { logTaskFinished } from "../../services/logging/helpers/taskLifecycleLogger"
 
 import { BaseTool, ToolCallbacks } from "./BaseTool"
 
@@ -84,6 +85,9 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 			// This ensures the most recent stats are captured regardless of throttle timer
 			// and properly updates the snapshot to prevent redundant emissions
 			task.emitFinalTokenUsageUpdate()
+
+			// Log task completion with detailed metrics
+			await logTaskFinished(task.taskId, result, task.getTokenUsage(), task.toolUsage, task.parentTaskId)
 
 			TelemetryService.instance.captureTaskCompleted(task.taskId)
 			task.emit(RooCodeEventName.TaskCompleted, task.taskId, task.getTokenUsage(), task.toolUsage)

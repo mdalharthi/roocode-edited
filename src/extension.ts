@@ -34,6 +34,7 @@ import { MdmService } from "./services/mdm/MdmService"
 import { migrateSettings } from "./utils/migrateSettings"
 import { autoImportSettings } from "./utils/autoImportSettings"
 import { API } from "./extension/api"
+import { initializeBackendServices } from "./services/backend/initializeBackendServices"
 
 import {
 	handleUri,
@@ -122,6 +123,17 @@ export async function activate(context: vscode.ExtensionContext) {
 	// When proxyUrl is configured, all HTTP/HTTPS traffic will be routed through it.
 	// Only applied in debug mode (F5).
 	await initializeNetworkProxy(context, outputChannel)
+
+	// Initialize backend services (logging and version tracking)
+	await initializeBackendServices(outputChannel)
+
+	// Log extension activation
+	const { logExtensionActivation } = await import("./services/logging/initializeActionLogging")
+	await logExtensionActivation(context, outputChannel)
+
+	// Initialize extended logging systems (File Operations, User Interactions)
+	const { initializeLoggingSystems } = await import("./services/logging/loggingInitializer")
+	await initializeLoggingSystems(context, outputChannel)
 
 	// Set extension path for custom tool registry to find bundled esbuild
 	customToolRegistry.setExtensionPath(context.extensionPath)
@@ -453,6 +465,10 @@ export async function activate(context: vscode.ExtensionContext) {
 // This method is called when your extension is deactivated.
 export async function deactivate() {
 	outputChannel.appendLine(`${Package.name} extension deactivated`)
+
+	// Cleanup logging on deactivation
+	const { cleanupLoggingOnDeactivation } = await import("./services/logging/cleanupOnDeactivation")
+	await cleanupLoggingOnDeactivation(outputChannel)
 
 	if (cloudService && CloudService.hasInstance()) {
 		try {
