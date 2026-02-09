@@ -15,6 +15,7 @@ import ChatView, { ChatViewRef } from "./components/chat/ChatView"
 import HistoryView from "./components/history/HistoryView"
 import SettingsView, { SettingsViewRef } from "./components/settings/SettingsView"
 import WelcomeView from "./components/welcome/WelcomeViewProvider"
+import LdapLoginView from "./components/login/LdapLoginView"
 import { MarketplaceView } from "./components/marketplace/MarketplaceView"
 import { CheckpointRestoreDialog } from "./components/chat/CheckpointRestoreDialog"
 import { DeleteMessageDialog, EditMessageDialog } from "./components/chat/MessageModificationConfirmationDialog"
@@ -66,6 +67,11 @@ const App = () => {
 		cloudOrganizations,
 		renderContext,
 		mdmCompliant,
+		// LDAP Authentication state
+		ldapUser,
+		ldapAuthChecked,
+		showLdapLogin,
+		ldapAuthError,
 	} = useExtensionState()
 
 	// Create a persistent state manager
@@ -218,6 +224,11 @@ const App = () => {
 
 	if (!didHydrateState) {
 		return null
+	}
+
+	// Show LDAP login if authentication check is pending or login is required
+	if (!ldapAuthChecked || showLdapLogin) {
+		return <LdapLoginView isCheckingAuth={!ldapAuthChecked} error={ldapAuthError} />
 	}
 
 	// Do not conditionally load ChatView, it's expensive and there's state we

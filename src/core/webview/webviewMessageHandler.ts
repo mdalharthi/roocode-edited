@@ -460,7 +460,9 @@ export const webviewMessageHandler = async (
 		}
 	}
 
-	switch (message.type) {
+	// Cast message.type to string to allow for custom message types (e.g., ldapLogin)
+	const messageType = message.type as string
+	switch (messageType) {
 		case "webviewDidLaunch":
 			// Load custom modes first
 			const customModes = await provider.customModesManager.getCustomModes()
@@ -534,6 +536,84 @@ export const webviewMessageHandler = async (
 			})
 
 			provider.isViewLaunched = true
+
+			// Check LDAP authentication status on launch
+			try {
+				const { verifyUserWithLDAP } = await import("../../services/backend/ldapService")
+				const osUsername = os.userInfo().username
+				const backendApiUrl = process.env.BACKEND_API_URL || "http://localhost:8000/api/v1"
+				const backendApiKey = process.env.BACKEND_API_KEY || ""
+				const ldapResult = await verifyUserWithLDAP(osUsername, backendApiUrl, backendApiKey)
+
+				if (ldapResult.verified) {
+					// User found in AD - auto-login
+					await provider.postMessageToWebview({
+						type: "ldapAuthResult",
+						ldapUser: {
+							username: osUsername,
+							verified: true,
+							displayName: ldapResult.displayName,
+							email: ldapResult.email,
+							department: ldapResult.department,
+						},
+					} as any)
+				} else {
+					// User not found in AD - show login form
+					await provider.postMessageToWebview({
+						type: "ldapAuthResult",
+						ldapUser: null,
+						error: "User not found in Active Directory",
+					} as any)
+				}
+			} catch (error) {
+				// LDAP check failed - show login form
+				provider.log(`[checkLdapAuth] Error checking LDAP status: ${error}`)
+				await provider.postMessageToWebview({
+					type: "ldapAuthResult",
+					ldapUser: null,
+					error: "Failed to verify user in Active Directory",
+				} as any)
+			}
+			break
+		case "ldapLogin":
+			// Handle LDAP login with credentials from webview
+			try {
+				const { authenticateWithLDAP } = await import("../../services/backend/ldapService")
+				const loginMessage = message as any
+				const result = await authenticateWithLDAP(
+					loginMessage.username,
+					loginMessage.password,
+					process.env.BACKEND_API_URL || "http://localhost:8000/api/v1",
+					process.env.BACKEND_API_KEY || "",
+				)
+
+				if (result.authenticated) {
+					await provider.postMessageToWebview({
+						type: "ldapLoginResponse",
+						authenticated: true,
+						user: {
+							username: result.username,
+							verified: true,
+							displayName: result.displayName,
+							email: result.email,
+							department: result.department,
+						},
+					} as any)
+				} else {
+					await provider.postMessageToWebview({
+						type: "ldapLoginResponse",
+						authenticated: false,
+						error: result.error || "Authentication failed",
+					} as any)
+				}
+			} catch (error) {
+				provider.log(`[ldapLogin] Error during authentication: ${error}`)
+				await provider.postMessageToWebview({
+					type: "ldapLoginResponse",
+					authenticated: false,
+					error: "Authentication failed. Please try again.",
+				} as any)
+			}
 			break
 		case "newTask":
 			// Initializing new instance of Cline will make sure that any

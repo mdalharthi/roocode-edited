@@ -1,5 +1,20 @@
 import * as vscode from "vscode"
+import * as os from "os"
 import { Package } from "../../shared/package"
+
+/**
+ * Gets the system username safely
+ * @returns The system username or "unknown" if unable to retrieve
+ */
+function getSystemUserId(): string {
+	try {
+		console.log("System user ID:", os.userInfo().username)
+		return os.userInfo().username || "unknown"
+	} catch {
+		// os.userInfo() can throw on some systems
+		return process.env.USER || process.env.USERNAME || "unknown"
+	}
+}
 
 /**
  * Initializes backend services including logging and version tracking
@@ -20,6 +35,33 @@ export async function initializeBackendServices(outputChannel: vscode.OutputChan
 	}
 
 	if (useBackendApi && backendApiUrl && backendApiKey) {
+		// Get the system user ID and verify against Active Directory
+		let systemUserId = getSystemUserId()
+
+		// Verify user against Active Directory
+		try {
+			const { verifyUserWithLDAP } = await import("./ldapService")
+			outputChannel.appendLine(`[Backend] Verifying user '${systemUserId}' against Active Directory...`)
+
+			const ldapResult = await verifyUserWithLDAP(systemUserId, backendApiUrl, backendApiKey)
+
+			if (ldapResult.verified) {
+				outputChannel.appendLine(`[Backend] User '${systemUserId}' verified in AD`)
+				if (ldapResult.displayName) {
+					outputChannel.appendLine(`[Backend] Display name: ${ldapResult.displayName}`)
+				}
+			} else {
+				outputChannel.appendLine(`[Backend] User '${systemUserId}' not found in AD, using 'unknown'`)
+				systemUserId = "unknown"
+			}
+		} catch (error) {
+			outputChannel.appendLine(
+				`[Backend] LDAP verification failed: ${error instanceof Error ? error.message : String(error)}`,
+			)
+			// Keep the original username if verification fails
+			outputChannel.appendLine(`[Backend] Continuing with unverified user: ${systemUserId}`)
+		}
+
 		// Initialize logging service
 		try {
 			const { LoggingService } = await import("../logging/LoggingService")
@@ -29,9 +71,10 @@ export async function initializeBackendServices(outputChannel: vscode.OutputChan
 				apiUrl: backendApiUrl,
 				apiKey: backendApiKey,
 				sessionId: uuidv7(),
+				userId: systemUserId,
 				enabled: true,
 			})
-			outputChannel.appendLine("[Backend] Logging service initialized")
+			outputChannel.appendLine(`[Backend] Logging service initialized with user: ${systemUserId}`)
 
 			// Send boot-up test log
 			try {

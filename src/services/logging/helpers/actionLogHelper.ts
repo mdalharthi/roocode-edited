@@ -35,8 +35,8 @@ export async function logAction(context: ActionContext, result?: ActionResult): 
 	return await LoggingService.instance.logAction({
 		action_type: context.actionType,
 		action_name: context.actionName,
-		user_id: context.userId,
-		workspace_id: context.workspaceId,
+		...(context.userId && { user_id: context.userId }),
+		...(context.workspaceId && { workspace_id: context.workspaceId }),
 		input_data: context.inputData,
 		action_metadata: context.metadata,
 		status: result?.status || "pending",
@@ -71,8 +71,8 @@ export class ActionLogger {
 		this.logId = await LoggingService.instance.logAction({
 			action_type: this.context.actionType,
 			action_name: this.context.actionName,
-			user_id: this.context.userId,
-			workspace_id: this.context.workspaceId,
+			...(this.context.userId && { user_id: this.context.userId }),
+			...(this.context.workspaceId && { workspace_id: this.context.workspaceId }),
 			input_data: this.context.inputData,
 			action_metadata: this.context.metadata,
 			status: "pending",

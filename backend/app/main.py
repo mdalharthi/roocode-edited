@@ -10,7 +10,7 @@ from app.config import settings
 from app.database import init_db, close_db
 from app.core.logging import setup_logging
 from app.core.middleware import LoggingMiddleware, ExceptionMiddleware
-from app.api.v1 import health, providers, logs, version, batch
+from app.api.v1 import health, providers, logs, version, batch, users
 
 
 @asynccontextmanager
@@ -71,6 +71,7 @@ app.include_router(providers.router, prefix=API_V1_PREFIX, tags=["API Providers"
 app.include_router(logs.router, prefix=API_V1_PREFIX, tags=["Logs"])
 app.include_router(version.router, prefix=API_V1_PREFIX, tags=["Version Control"])
 app.include_router(batch.router, prefix=API_V1_PREFIX, tags=["Batch Operations"])
+app.include_router(users.router, prefix=API_V1_PREFIX, tags=["Users"])
 
 
 @app.get("/")

@@ -8,6 +8,7 @@ from app.api.v1 import (
     logs,
     version,
     batch,
+    users,
 )
 
 __all__ = [
@@ -16,4 +17,5 @@ __all__ = [
     "logs",
     "version",
     "batch",
+    "users",
 ]

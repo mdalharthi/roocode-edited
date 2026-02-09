@@ -30,6 +30,15 @@ import { experimentDefault } from "@roo/experiments"
 import { vscode } from "@src/utils/vscode"
 import { convertTextMateToHljs } from "@src/utils/textMateToHljs"
 
+// LDAP User Information
+export interface LdapUserInfo {
+	username: string
+	verified: boolean
+	displayName?: string
+	email?: string
+	department?: string
+}
+
 export interface ExtensionStateContextType extends ExtensionState {
 	historyPreviewCollapsed?: boolean // Add the new state property
 	didHydrateState: boolean
@@ -60,6 +69,11 @@ export interface ExtensionStateContextType extends ExtensionState {
 	marketplaceInstalledMetadata?: MarketplaceInstalledMetadata
 	profileThresholds: Record<string, number>
 	setProfileThresholds: (value: Record<string, number>) => void
+	// LDAP Authentication state
+	ldapUser: LdapUserInfo | null
+	ldapAuthChecked: boolean
+	showLdapLogin: boolean
+	ldapAuthError?: string
 	setApiConfiguration: (config: ProviderSettings) => void
 	setCustomInstructions: (value?: string) => void
 	setAlwaysAllowReadOnly: (value: boolean) => void
@@ -298,6 +312,11 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 	const [includeTaskHistoryInEnhance, setIncludeTaskHistoryInEnhance] = useState(true)
 	const [prevCloudIsAuthenticated, setPrevCloudIsAuthenticated] = useState(false)
 	const [includeCurrentTime, setIncludeCurrentTime] = useState(true)
+	// LDAP Authentication state
+	const [ldapUser, setLdapUser] = useState<LdapUserInfo | null>(null)
+	const [ldapAuthChecked, setLdapAuthChecked] = useState(false)
+	const [showLdapLogin, setShowLdapLogin] = useState(false)
+	const [ldapAuthError, setLdapAuthError] = useState<string | undefined>(undefined)
 	const [includeCurrentCost, setIncludeCurrentCost] = useState(true)
 
 	const setListApiConfigMeta = useCallback(
@@ -318,7 +337,8 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 	const handleMessage = useCallback(
 		(event: MessageEvent) => {
 			const message: ExtensionMessage = event.data
-			switch (message.type) {
+			const messageType = message.type as string // Cast to string to allow LDAP message types
+			switch (messageType) {
 				case "state": {
 					const newState = message.state ?? {}
 					setState((prevState) => mergeExtensionState(prevState, newState))
@@ -457,6 +477,32 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 					})
 					break
 				}
+				// LDAP Authentication message handlers
+				case "ldapAuthResult": {
+					const ldapData = (message as any).ldapUser
+					if (ldapData && ldapData.verified) {
+						setLdapUser(ldapData)
+						setShowLdapLogin(false)
+						setLdapAuthError(undefined)
+					} else {
+						setLdapUser(null)
+						setShowLdapLogin(true)
+						setLdapAuthError((message as any).error || undefined)
+					}
+					setLdapAuthChecked(true)
+					break
+				}
+				case "ldapLoginResponse": {
+					const loginData = message as any
+					if (loginData.authenticated && loginData.user) {
+						setLdapUser(loginData.user)
+						setShowLdapLogin(false)
+						setLdapAuthError(undefined)
+					} else {
+						setLdapAuthError(loginData.error || "Authentication failed")
+					}
+					break
+				}
 			}
 		},
 		[setListApiConfigMeta],
@@ -507,6 +553,11 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		marketplaceInstalledMetadata,
 		profileThresholds: state.profileThresholds ?? {},
 		alwaysAllowFollowupQuestions,
+		// LDAP Authentication state
+		ldapUser,
+		ldapAuthChecked,
+		showLdapLogin,
+		ldapAuthError,
 		followupAutoApproveTimeoutMs,
 		remoteControlEnabled: state.remoteControlEnabled ?? false,
 		taskSyncEnabled: state.taskSyncEnabled,

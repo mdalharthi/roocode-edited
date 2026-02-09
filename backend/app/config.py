@@ -36,6 +36,19 @@ class Settings(BaseSettings):
     # CORS
     ALLOWED_ORIGINS: str = "*"
 
+    # LDAP Configuration (all from environment variables)
+    LDAP_HOST: str = ""
+    LDAP_PORT: int = 636
+    LDAP_USE_SSL: bool = True
+    LDAP_BIND_DN: str = ""
+    LDAP_BIND_PASSWORD: str = ""
+    LDAP_SEARCH_BASE: str = ""
+    LDAP_SEARCH_FILTER: str = ""
+    LDAP_USER_RDN_ATTR: str = ""
+    LDAP_USER_DOMAIN: str = ""
+    LDAP_TIMEOUT: int = 10
+
+
     # Pagination
     DEFAULT_PAGE_SIZE: int = 50
     MAX_PAGE_SIZE: int = 100

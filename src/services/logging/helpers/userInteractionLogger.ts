@@ -24,8 +24,8 @@ export async function logUserPrompt(prompt: string, context: UserInteractionCont
 
 	try {
 		await LoggingService.instance.logUserInteraction({
-			session_id: context.sessionId,
-			user_id: context.userId,
+			...(context.sessionId && { session_id: context.sessionId }),
+			...(context.userId && { user_id: context.userId }),
 			action_log_id: context.actionLogId,
 			interaction_type: "user_prompt",
 			component: "chat_interface",
@@ -57,8 +57,8 @@ export async function logSystemMessage(
 
 	try {
 		await LoggingService.instance.logUserInteraction({
-			session_id: context.sessionId,
-			user_id: context.userId,
+			...(context.sessionId && { session_id: context.sessionId }),
+			...(context.userId && { user_id: context.userId }),
 			action_log_id: context.actionLogId,
 			interaction_type: type,
 			component: "chat_interface",
@@ -89,8 +89,8 @@ export async function logTaskCreation(
 
 	try {
 		await LoggingService.instance.logUserInteraction({
-			session_id: context.sessionId,
-			user_id: context.userId,
+			...(context.sessionId && { session_id: context.sessionId }),
+			...(context.userId && { user_id: context.userId }),
 			action_log_id: context.actionLogId,
 			interaction_type: "task_creation",
 			component: "task_interface",
@@ -125,8 +125,8 @@ export async function logInteraction(
 
 	try {
 		await LoggingService.instance.logUserInteraction({
-			session_id: context.sessionId,
-			user_id: context.userId,
+			...(context.sessionId && { session_id: context.sessionId }),
+			...(context.userId && { user_id: context.userId }),
 			action_log_id: context.actionLogId,
 			interaction_type: interactionType,
 			component: component,
