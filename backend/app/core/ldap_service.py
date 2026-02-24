@@ -125,16 +125,33 @@ class LDAPService:
             # Build the search filter
             search_filter = settings.LDAP_SEARCH_FILTER % username
             
+            logger.info(f"LDAP search - base: '{settings.LDAP_SEARCH_BASE}', filter: '{search_filter}'")
+            
             # Search for the user
             success = conn.search(
                 search_base=settings.LDAP_SEARCH_BASE,
                 search_filter=search_filter,
                 search_scope=SUBTREE,
-                attributes=["sAMAccountName", "cn", "displayName", "mail", "department"],
+                attributes=["uid", "sAMAccountName", "cn", "displayName", "mail", "department"],
             )
+            
+            logger.info(f"LDAP search result: success={success}, entries={len(conn.entries)}")
+            
+            # If primary filter didn't find the user, try fallback with sAMAccountName
+            if not (success and len(conn.entries) > 0):
+                fallback_filter = f"(&(objectClass=user)(sAMAccountName={username}))"
+                logger.info(f"Primary search found nothing, trying fallback filter: '{fallback_filter}'")
+                success = conn.search(
+                    search_base=settings.LDAP_SEARCH_BASE,
+                    search_filter=fallback_filter,
+                    search_scope=SUBTREE,
+                    attributes=["uid", "sAMAccountName", "cn", "displayName", "mail", "department"],
+                )
+                logger.info(f"Fallback search result: success={success}, entries={len(conn.entries)}")
             
             if success and len(conn.entries) > 0:
                 entry = conn.entries[0]
+                logger.info(f"Found LDAP entry: {entry.entry_dn}")
                 
                 # Extract user information
                 display_name = str(entry.displayName) if hasattr(entry, 'displayName') and entry.displayName else None
@@ -150,7 +167,7 @@ class LDAPService:
                     department=department,
                 )
             else:
-                logger.warning(f"User '{username}' not found in Active Directory")
+                logger.warning(f"User '{username}' not found in Active Directory (tried both uid and sAMAccountName)")
                 return LDAPUserInfo(username="unknown", verified=False)
                 
         except LDAPException as e:
@@ -217,7 +234,7 @@ class LDAPService:
                 search_base=settings.LDAP_SEARCH_BASE,
                 search_filter=search_filter,
                 search_scope=SUBTREE,
-                attributes=["sAMAccountName", "cn", "displayName", "mail", "department"],
+                attributes=["uid", "cn", "displayName", "mail", "department"],
             )
             
             user_info = LDAPUserInfo(username=username, verified=True)

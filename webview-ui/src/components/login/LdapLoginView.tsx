@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { VSCodeProgressRing, VSCodeTextField } from "@vscode/webview-ui-toolkit/react"
 import { Shield, AlertCircle, LogIn } from "lucide-react"
 
@@ -12,12 +12,26 @@ interface LdapLoginViewProps {
 	error?: string
 }
 
-const LdapLoginView = ({ isCheckingAuth, error: initialError }: LdapLoginViewProps) => {
+const LdapLoginView = ({ isCheckingAuth, error: externalError }: LdapLoginViewProps) => {
 	const { t } = useAppTranslation()
 	const [username, setUsername] = useState("")
 	const [password, setPassword] = useState("")
-	const [error, setError] = useState<string | undefined>(initialError)
+	const [error, setError] = useState<string | undefined>(externalError)
 	const [isLoading, setIsLoading] = useState(false)
+
+	// Listen for ldapLoginResponse messages directly to always reset loading state
+	// (useEffect on prop won't re-fire if the error string is identical on repeated failures)
+	useEffect(() => {
+		const handleMessage = (event: MessageEvent) => {
+			const message = event.data
+			if (message.type === "ldapLoginResponse" && !message.authenticated) {
+				setError(message.error || "Authentication failed. Please check your credentials.")
+				setIsLoading(false)
+			}
+		}
+		window.addEventListener("message", handleMessage)
+		return () => window.removeEventListener("message", handleMessage)
+	}, [])
 
 	const handleLogin = useCallback(() => {
 		if (!username.trim() || !password.trim()) {

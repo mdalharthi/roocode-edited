@@ -8,7 +8,6 @@ import { Package } from "../../shared/package"
  */
 function getSystemUserId(): string {
 	try {
-		console.log("System user ID:", os.userInfo().username)
 		return os.userInfo().username || "unknown"
 	} catch {
 		// os.userInfo() can throw on some systems
