@@ -1,4 +1,5 @@
 import * as vscode from "vscode"
+import * as path from "path"
 import {
 	QDRANT_CODE_BLOCK_NAMESPACE,
 	MAX_FILE_SIZE_BYTES,
@@ -508,6 +509,16 @@ export class FileWatcher implements IFileWatcher {
 	 */
 	async processFile(filePath: string): Promise<FileProcessingResult> {
 		try {
+			const normalizedFilePath = path.resolve(filePath)
+			const relativePath = path.relative(this.workspacePath, normalizedFilePath)
+			if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+				return {
+					path: filePath,
+					status: "skipped" as const,
+					reason: "File is outside the workspace",
+				}
+			}
+
 			// Check if file is in an ignored directory
 			if (isPathInIgnoredDirectory(filePath)) {
 				return {

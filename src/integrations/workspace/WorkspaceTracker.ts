@@ -140,6 +140,13 @@ class WorkspaceTracker {
 		}
 
 		const normalizedPath = this.normalizeFilePath(filePath)
+		if (this.cwd) {
+			const relativePath = path.relative(this.cwd, normalizedPath)
+			if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+				return normalizedPath
+			}
+		}
+
 		try {
 			const stat = await vscode.workspace.fs.stat(vscode.Uri.file(normalizedPath))
 			const isDirectory = (stat.type & vscode.FileType.Directory) !== 0

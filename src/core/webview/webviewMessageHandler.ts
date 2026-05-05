@@ -539,31 +539,44 @@ export const webviewMessageHandler = async (
 
 			// Check LDAP authentication status on launch
 			try {
-				const { verifyUserWithLDAP } = await import("../../services/backend/ldapService")
 				const osUsername = os.userInfo().username
+				const backendDevMode = process.env.BACKEND_DEV_MODE === "true"
 				const backendApiUrl = process.env.BACKEND_API_URL || "http://localhost:8000/api/v1"
 				const backendApiKey = process.env.BACKEND_API_KEY || ""
-				const ldapResult = await verifyUserWithLDAP(osUsername, backendApiUrl, backendApiKey)
 
-				if (ldapResult.verified) {
-					// User found in AD - auto-login
+				if (backendDevMode) {
 					await provider.postMessageToWebview({
 						type: "ldapAuthResult",
 						ldapUser: {
 							username: osUsername,
 							verified: true,
-							displayName: ldapResult.displayName,
-							email: ldapResult.email,
-							department: ldapResult.department,
+							displayName: osUsername,
 						},
 					} as any)
 				} else {
-					// User not found in AD - show login form
-					await provider.postMessageToWebview({
-						type: "ldapAuthResult",
-						ldapUser: null,
-						error: "User not found in Active Directory",
-					} as any)
+					const { verifyUserWithLDAP } = await import("../../services/backend/ldapService")
+					const ldapResult = await verifyUserWithLDAP(osUsername, backendApiUrl, backendApiKey)
+
+					if (ldapResult.verified) {
+						// User found in AD - auto-login
+						await provider.postMessageToWebview({
+							type: "ldapAuthResult",
+							ldapUser: {
+								username: osUsername,
+								verified: true,
+								displayName: ldapResult.displayName,
+								email: ldapResult.email,
+								department: ldapResult.department,
+							},
+						} as any)
+					} else {
+						// User not found in AD - show login form
+						await provider.postMessageToWebview({
+							type: "ldapAuthResult",
+							ldapUser: null,
+							error: "User not found in Active Directory",
+						} as any)
+					}
 				}
 			} catch (error) {
 				// LDAP check failed - show login form
@@ -578,8 +591,23 @@ export const webviewMessageHandler = async (
 		case "ldapLogin":
 			// Handle LDAP login with credentials from webview
 			try {
-				const { authenticateWithLDAP } = await import("../../services/backend/ldapService")
+				const backendDevMode = process.env.BACKEND_DEV_MODE === "true"
 				const loginMessage = message as any
+
+				if (backendDevMode) {
+					await provider.postMessageToWebview({
+						type: "ldapLoginResponse",
+						authenticated: true,
+						user: {
+							username: loginMessage.username,
+							verified: true,
+							displayName: loginMessage.username,
+						},
+					} as any)
+					break
+				}
+
+				const { authenticateWithLDAP } = await import("../../services/backend/ldapService")
 				const result = await authenticateWithLDAP(
 					loginMessage.username,
 					loginMessage.password,

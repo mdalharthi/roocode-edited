@@ -24,6 +24,7 @@ export async function initializeBackendServices(outputChannel: vscode.OutputChan
 	const backendApiUrl = process.env.BACKEND_API_URL
 	const backendApiKey = process.env.BACKEND_API_KEY
 	const useBackendApi = process.env.USE_BACKEND_API === "true"
+	const backendDevMode = process.env.BACKEND_DEV_MODE === "true"
 
 	if (!useBackendApi) {
 		outputChannel.appendLine(`[Backend] Services disabled (USE_BACKEND_API=${process.env.USE_BACKEND_API})`)
@@ -37,28 +38,34 @@ export async function initializeBackendServices(outputChannel: vscode.OutputChan
 		// Get the system user ID and verify against Active Directory
 		let systemUserId = getSystemUserId()
 
-		// Verify user against Active Directory
-		try {
-			const { verifyUserWithLDAP } = await import("./ldapService")
-			outputChannel.appendLine(`[Backend] Verifying user '${systemUserId}' against Active Directory...`)
-
-			const ldapResult = await verifyUserWithLDAP(systemUserId, backendApiUrl, backendApiKey)
-
-			if (ldapResult.verified) {
-				outputChannel.appendLine(`[Backend] User '${systemUserId}' verified in AD`)
-				if (ldapResult.displayName) {
-					outputChannel.appendLine(`[Backend] Display name: ${ldapResult.displayName}`)
-				}
-			} else {
-				outputChannel.appendLine(`[Backend] User '${systemUserId}' not found in AD, using 'unknown'`)
-				systemUserId = "unknown"
-			}
-		} catch (error) {
+		if (backendDevMode) {
 			outputChannel.appendLine(
-				`[Backend] LDAP verification failed: ${error instanceof Error ? error.message : String(error)}`,
+				`[Backend] Dev mode enabled (BACKEND_DEV_MODE=true), skipping LDAP verification for '${systemUserId}'`,
 			)
-			// Keep the original username if verification fails
-			outputChannel.appendLine(`[Backend] Continuing with unverified user: ${systemUserId}`)
+		} else {
+			// Verify user against Active Directory
+			try {
+				const { verifyUserWithLDAP } = await import("./ldapService")
+				outputChannel.appendLine(`[Backend] Verifying user '${systemUserId}' against Active Directory...`)
+
+				const ldapResult = await verifyUserWithLDAP(systemUserId, backendApiUrl, backendApiKey)
+
+				if (ldapResult.verified) {
+					outputChannel.appendLine(`[Backend] User '${systemUserId}' verified in AD`)
+					if (ldapResult.displayName) {
+						outputChannel.appendLine(`[Backend] Display name: ${ldapResult.displayName}`)
+					}
+				} else {
+					outputChannel.appendLine(`[Backend] User '${systemUserId}' not found in AD, using 'unknown'`)
+					systemUserId = "unknown"
+				}
+			} catch (error) {
+				outputChannel.appendLine(
+					`[Backend] LDAP verification failed: ${error instanceof Error ? error.message : String(error)}`,
+				)
+				// Keep the original username if verification fails
+				outputChannel.appendLine(`[Backend] Continuing with unverified user: ${systemUserId}`)
+			}
 		}
 
 		// Initialize logging service
