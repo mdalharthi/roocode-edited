@@ -10,7 +10,6 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.orm import declarative_base
-from sqlalchemy.pool import NullPool, QueuePool
 
 from app.config import settings
 
@@ -18,7 +17,6 @@ from app.config import settings
 engine = create_async_engine(
     settings.database_url_async,
     echo=settings.DB_ECHO,
-    poolclass=QueuePool,
     pool_size=settings.DB_POOL_SIZE,
     max_overflow=settings.DB_MAX_OVERFLOW,
     pool_timeout=settings.DB_POOL_TIMEOUT,

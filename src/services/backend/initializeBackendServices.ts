@@ -118,36 +118,42 @@ export async function initializeBackendServices(outputChannel: vscode.OutputChan
 			)
 		}
 
-		// Initialize version tracking
-		try {
-			const { initializeExtensionVersion } = await import("../version")
-			await initializeExtensionVersion(Package.version, backendApiUrl, backendApiKey, {
-				name: Package.name,
-				publisher: Package.publisher,
-				sha: Package.sha,
-				node_env: process.env.NODE_ENV,
-				platform: process.platform,
-			})
-			outputChannel.appendLine(`[Backend] Version ${Package.version} tracked`)
-		} catch (error) {
-			const errorMsg = error instanceof Error ? error.message : String(error)
+		if (backendDevMode) {
+			outputChannel.appendLine(
+				`[Backend] Dev mode enabled (BACKEND_DEV_MODE=true), skipping backend version tracking for '${Package.version}'`,
+			)
+		} else {
+			// Initialize version tracking
+			try {
+				const { initializeExtensionVersion } = await import("../version")
+				await initializeExtensionVersion(Package.version, backendApiUrl, backendApiKey, {
+					name: Package.name,
+					publisher: Package.publisher,
+					sha: Package.sha,
+					node_env: process.env.NODE_ENV,
+					platform: process.platform,
+				})
+				outputChannel.appendLine(`[Backend] Version ${Package.version} tracked`)
+			} catch (error) {
+				const errorMsg = error instanceof Error ? error.message : String(error)
 
-			// Check if this is a version lock error
-			if (errorMsg.includes("LOCKED") || errorMsg.includes("mismatch")) {
-				outputChannel.appendLine(`[Backend] CRITICAL: ${errorMsg}`)
+				// Check if this is a version lock error
+				if (errorMsg.includes("LOCKED") || errorMsg.includes("mismatch")) {
+					outputChannel.appendLine(`[Backend] CRITICAL: ${errorMsg}`)
 
-				// Show error dialog to user
-				await vscode.window.showErrorMessage(
-					`Extension Locked: This version (${Package.version}) is not authorized. ${errorMsg}`,
-					{ modal: true },
-				)
+					// Show error dialog to user
+					await vscode.window.showErrorMessage(
+						`Extension Locked: This version (${Package.version}) is not authorized. ${errorMsg}`,
+						{ modal: true },
+					)
 
-				// Throw error to prevent extension from activating
-				throw new Error(`Extension activation blocked: ${errorMsg}`)
+					// Throw error to prevent extension from activating
+					throw new Error(`Extension activation blocked: ${errorMsg}`)
+				}
+
+				// Non-critical error
+				outputChannel.appendLine(`[Backend] Version tracking failed: ${errorMsg}`)
 			}
-
-			// Non-critical error
-			outputChannel.appendLine(`[Backend] Version tracking failed: ${errorMsg}`)
 		}
 	} else {
 		outputChannel.appendLine("[Backend] Services disabled (USE_BACKEND_API not enabled or missing credentials)")
