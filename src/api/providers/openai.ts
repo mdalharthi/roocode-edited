@@ -1,6 +1,7 @@
 import { Anthropic } from "@anthropic-ai/sdk"
 import OpenAI, { AzureOpenAI } from "openai"
 import axios from "axios"
+import https from "https"
 
 import {
 	type ModelInfo,
@@ -24,6 +25,7 @@ import { BaseProvider } from "./base-provider"
 import type { SingleCompletionHandler, ApiHandlerCreateMessageMetadata } from "../index"
 import { getApiRequestTimeout } from "./utils/timeout-config"
 import { handleOpenAIError } from "./utils/openai-error-handler"
+import { parseXmlToolCalls, hasXmlToolCalls, stripXmlToolCalls } from "./utils/xml-tool-call-parser"
 
 // TODO: Rename this to OpenAICompatibleHandler. Also, I think the
 // `OpenAINativeHandler` can subclass from this, since it's obviously
@@ -32,6 +34,52 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 	protected options: ApiHandlerOptions
 	protected client: OpenAI
 	private readonly providerName = "OpenAI"
+
+	private isCustomOpenAiEndpoint(): boolean {
+		const host = this._getUrlHost(this.options.openAiBaseUrl)
+		return !!(
+			host &&
+			host !== "api.openai.com" &&
+			host !== "api.openai.com:443" &&
+			!this._isAzureAiInference(this.options.openAiBaseUrl) &&
+			!this.options.openAiUseAzure
+		)
+	}
+
+	private flattenTextOnlyMessages(
+		messages: OpenAI.Chat.ChatCompletionMessageParam[],
+	): OpenAI.Chat.ChatCompletionMessageParam[] {
+		return messages.map((msg) => {
+			if (
+				msg.role === "user" &&
+				Array.isArray(msg.content) &&
+				msg.content.every((part) => part.type === "text")
+			) {
+				return {
+					...msg,
+					content: msg.content
+						.map((part) => (part as OpenAI.Chat.ChatCompletionContentPartText).text)
+						.join("\n"),
+				}
+			}
+			return msg
+		})
+	}
+
+	override convertToolsForOpenAI(tools: any[] | undefined): any[] | undefined {
+		const convertedTools = super.convertToolsForOpenAI(tools)
+		const isCustom = this.isCustomOpenAiEndpoint()
+
+		if (isCustom && convertedTools) {
+			convertedTools.forEach((tool) => {
+				if (tool.function && "strict" in tool.function) {
+					delete tool.function.strict
+				}
+			})
+		}
+
+		return convertedTools
+	}
 
 	constructor(options: ApiHandlerOptions) {
 		super()
@@ -50,32 +98,37 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 
 		const timeout = getApiRequestTimeout()
 
+		const clientOptions: any = {
+			baseURL,
+			apiKey,
+			defaultHeaders: headers,
+			timeout,
+			dangerouslyAllowBrowser: true,
+		}
+
+		if (this.isCustomOpenAiEndpoint()) {
+			const disableSsl =
+				process.env.DISABLE_SSL_VERIFICATION === "true" || process.env.NODE_TLS_REJECT_UNAUTHORIZED === "0"
+			if (disableSsl) {
+				process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"
+			}
+		}
+
 		if (isAzureAiInference) {
 			// Azure AI Inference Service (e.g., for DeepSeek) uses a different path structure
 			this.client = new OpenAI({
-				baseURL,
-				apiKey,
-				defaultHeaders: headers,
+				...clientOptions,
 				defaultQuery: { "api-version": this.options.azureApiVersion || "2024-05-01-preview" },
-				timeout,
 			})
 		} else if (isAzureOpenAi) {
 			// Azure API shape slightly differs from the core API shape:
 			// https://github.com/openai/openai-node?tab=readme-ov-file#microsoft-azure-openai
 			this.client = new AzureOpenAI({
-				baseURL,
-				apiKey,
+				...clientOptions,
 				apiVersion: this.options.azureApiVersion || azureOpenAiDefaultApiVersion,
-				defaultHeaders: headers,
-				timeout,
 			})
 		} else {
-			this.client = new OpenAI({
-				baseURL,
-				apiKey,
-				defaultHeaders: headers,
-				timeout,
-			})
+			this.client = new OpenAI(clientOptions)
 		}
 	}
 
@@ -121,7 +174,12 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 					}
 				}
 
-				convertedMessages = [systemMessage, ...convertToOpenAiMessages(messages)]
+				convertedMessages = [
+					systemMessage,
+					...(this.isCustomOpenAiEndpoint()
+						? this.flattenTextOnlyMessages(convertToOpenAiMessages(messages))
+						: convertToOpenAiMessages(messages)),
+				]
 
 				if (modelInfo.supportsPromptCache) {
 					// Note: the following logic is copied from openrouter:
@@ -188,14 +246,48 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 
 			let lastUsage
 			const activeToolCallIds = new Set<string>()
+			let accumulatedText = "" // Accumulate text to detect XML tool calls
 
 			for await (const chunk of stream) {
 				const delta = chunk.choices?.[0]?.delta ?? {}
 				const finishReason = chunk.choices?.[0]?.finish_reason
 
 				if (delta.content) {
-					for (const chunk of matcher.update(delta.content)) {
-						yield chunk
+					// Accumulate text for XML parsing
+					accumulatedText += delta.content
+
+					// Check if we have complete XML tool calls in the accumulated text
+					if (hasXmlToolCalls(accumulatedText)) {
+						const parsed = parseXmlToolCalls(accumulatedText)
+
+						// Emit any extracted tool calls
+						for (const toolCall of parsed.toolCalls) {
+							yield {
+								type: "tool_call",
+								id: toolCall.id,
+								name: toolCall.name,
+								arguments: toolCall.arguments,
+							}
+						}
+
+						// Process the cleaned text (without XML) through the matcher
+						for (const chunk of matcher.update(parsed.textWithoutXml)) {
+							yield chunk
+						}
+
+						// Reset accumulated text after processing
+						accumulatedText = ""
+					} else if (/<tool_call/.test(accumulatedText)) {
+						// XML tool call is incomplete, buffer it without emitting
+						// This prevents partial XML from appearing in chat
+						continue
+					} else {
+						// No XML tags at all, safe to emit
+						for (const chunk of matcher.update(delta.content)) {
+							yield chunk
+						}
+						// Clear accumulated text since we've processed it
+						accumulatedText = ""
 					}
 				}
 
@@ -213,6 +305,27 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				}
 			}
 
+			// Final pass: check if there's any remaining accumulated text with XML
+			if (accumulatedText && hasXmlToolCalls(accumulatedText)) {
+				const parsed = parseXmlToolCalls(accumulatedText)
+				for (const toolCall of parsed.toolCalls) {
+					yield {
+						type: "tool_call",
+						id: toolCall.id,
+						name: toolCall.name,
+						arguments: toolCall.arguments,
+					}
+				}
+				for (const chunk of matcher.update(parsed.textWithoutXml)) {
+					yield chunk
+				}
+			} else if (accumulatedText) {
+				// Emit any remaining text that wasn't XML
+				for (const chunk of matcher.update(accumulatedText)) {
+					yield chunk
+				}
+			}
+
 			for (const chunk of matcher.final()) {
 				yield chunk
 			}
@@ -225,7 +338,12 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				model: modelId,
 				messages: deepseekReasoner
 					? convertToR1Format([{ role: "user", content: systemPrompt }, ...messages])
-					: [systemMessage, ...convertToOpenAiMessages(messages)],
+					: [
+							systemMessage,
+							...(this.isCustomOpenAiEndpoint()
+								? this.flattenTextOnlyMessages(convertToOpenAiMessages(messages))
+								: convertToOpenAiMessages(messages)),
+						],
 				// Tools are always present (minimum ALWAYS_AVAILABLE_TOOLS)
 				tools: this.convertToolsForOpenAI(metadata?.tools),
 				tool_choice: metadata?.tool_choice,
@@ -247,6 +365,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 
 			const message = response.choices?.[0]?.message
 
+			// Handle native tool calls (standard format)
 			if (message?.tool_calls) {
 				for (const toolCall of message.tool_calls) {
 					if (toolCall.type === "function") {
@@ -260,9 +379,28 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				}
 			}
 
+			// Handle XML tool calls in the message content (for OpenAI-compatible endpoints like Qwen)
+			let textContent = message?.content || ""
+			if (textContent && hasXmlToolCalls(textContent)) {
+				const parsed = parseXmlToolCalls(textContent)
+
+				// Emit extracted XML tool calls as native format
+				for (const toolCall of parsed.toolCalls) {
+					yield {
+						type: "tool_call",
+						id: toolCall.id,
+						name: toolCall.name,
+						arguments: toolCall.arguments,
+					}
+				}
+
+				// Use cleaned text without XML
+				textContent = parsed.textWithoutXml
+			}
+
 			yield {
 				type: "text",
-				text: message?.content || "",
+				text: textContent,
 			}
 
 			yield this.processUsageMetrics(response.usage, modelInfo)
@@ -339,7 +477,9 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 						role: "developer",
 						content: `Formatting re-enabled\n${systemPrompt}`,
 					},
-					...convertToOpenAiMessages(messages),
+					...(this.isCustomOpenAiEndpoint()
+						? this.flattenTextOnlyMessages(convertToOpenAiMessages(messages))
+						: convertToOpenAiMessages(messages)),
 				],
 				stream: true,
 				...(isGrokXAI ? {} : { stream_options: { include_usage: true } }),
@@ -375,7 +515,9 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 						role: "developer",
 						content: `Formatting re-enabled\n${systemPrompt}`,
 					},
-					...convertToOpenAiMessages(messages),
+					...(this.isCustomOpenAiEndpoint()
+						? this.flattenTextOnlyMessages(convertToOpenAiMessages(messages))
+						: convertToOpenAiMessages(messages)),
 				],
 				reasoning_effort: modelInfo.reasoningEffort as "low" | "medium" | "high" | undefined,
 				temperature: undefined,

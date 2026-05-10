@@ -1,16 +1,16 @@
 # FastAPI and server
-fastapi==0.109.0
+fastapi==0.136.1
 uvicorn[standard]==0.27.0
 python-multipart==0.0.6
 
 # Database
-sqlalchemy[asyncio]==2.0.25
-asyncpg==0.29.0
+sqlalchemy[asyncio]==2.0.41
+asyncpg==0.30.0
 alembic==1.13.1
 
 # Validation and serialization
-pydantic==2.5.3
-pydantic-settings==2.1.0
+pydantic==2.13.4
+pydantic-settings==2.11.0
 
 # Security
 cryptography==42.0.0

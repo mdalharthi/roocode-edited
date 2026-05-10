@@ -1,10 +1,12 @@
 import { Anthropic } from "@anthropic-ai/sdk"
 import OpenAI from "openai"
+import https from "https"
 
 import type { ModelInfo } from "@roo-code/types"
 
 import { type ApiHandlerOptions, getModelMaxOutputTokens } from "../../shared/api"
 import { TagMatcher } from "../../utils/tag-matcher"
+import { isMcpTool } from "../../utils/mcp-name"
 import { ApiStream, ApiStreamUsageChunk } from "../transform/stream"
 import { convertToOpenAiMessages } from "../transform/openai-format"
 
@@ -14,6 +16,7 @@ import { BaseProvider } from "./base-provider"
 import { handleOpenAIError } from "./utils/openai-error-handler"
 import { calculateApiCostOpenAI } from "../../shared/cost"
 import { getApiRequestTimeout } from "./utils/timeout-config"
+import { parseXmlToolCalls, hasXmlToolCalls } from "./utils/xml-tool-call-parser"
 
 type BaseOpenAiCompatibleProviderOptions<ModelName extends string> = ApiHandlerOptions & {
 	providerName: string
@@ -59,11 +62,89 @@ export abstract class BaseOpenAiCompatibleProvider<ModelName extends string>
 			throw new Error("API key is required")
 		}
 
-		this.client = new OpenAI({
+		const disableSsl =
+			process.env.DISABLE_SSL_VERIFICATION === "true" || process.env.NODE_TLS_REJECT_UNAUTHORIZED === "0"
+
+		if (disableSsl) {
+			process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"
+		}
+
+		const clientOptions: any = {
 			baseURL,
 			apiKey: this.options.apiKey,
 			defaultHeaders: DEFAULT_HEADERS,
 			timeout: getApiRequestTimeout(),
+			dangerouslyAllowBrowser: true,
+		}
+
+		this.client = new OpenAI(clientOptions)
+	}
+
+	/**
+	 * Override tool conversion for OpenAI-compatible endpoints.
+	 * Removes strict mode field - many endpoints reject it as "Extra inputs not permitted".
+	 * Subclasses can override this to customize tool handling for their specific endpoint.
+	 */
+	protected override convertToolsForOpenAI(tools: any[] | undefined): any[] | undefined {
+		if (!tools) {
+			return undefined
+		}
+
+		return tools.map((tool) => {
+			if (tool.type !== "function") {
+				console.warn(
+					`Tool '${tool.name}' is not of type 'function' and will be passed through without modification. OpenAI-compatible endpoints only support function tools.`,
+					tool,
+				)
+				return tool
+			}
+
+			// MCP tools use the 'mcp--' prefix
+			const isMcp = isMcpTool(tool.function.name)
+
+			return {
+				...tool,
+				function: {
+					...tool.function,
+					// DO NOT include 'strict' field - OpenAI-compatible endpoints reject it
+					// as "Extra inputs are not permitted" (field not recognized)
+					parameters: isMcp
+						? tool.function.parameters
+						: this.convertToolSchemaForOpenAI(tool.function.parameters),
+				},
+			}
+		})
+	}
+
+	/**
+	 * Flattens text-only messages from array format to plain strings.
+	 * Many OpenAI-compatible endpoints expect plain strings for text-only messages
+	 * instead of the array format [..., { type: "text", text: "..." }].
+	 * If content has mixed types (text + images), keeps array format.
+	 */
+	protected flattenTextOnlyMessages(
+		messages: OpenAI.Chat.ChatCompletionMessageParam[],
+	): OpenAI.Chat.ChatCompletionMessageParam[] {
+		return messages.map((msg) => {
+			// Flatten for all message roles that can have array content
+			if (msg.role && Array.isArray(msg.content)) {
+				// Check if content contains only text blocks (no images or other types)
+				const hasNonText = msg.content.some((block: any) => block.type !== "text")
+
+				if (!hasNonText && msg.content.length > 0) {
+					// All blocks are text - concatenate them into a single string
+					const text = msg.content
+						.map((block: any) => (block.type === "text" ? block.text || "" : ""))
+						.join("")
+						.trim()
+
+					return {
+						...msg,
+						content: text || "",
+					}
+				}
+			}
+			return msg
 		})
 	}
 
@@ -86,16 +167,31 @@ export abstract class BaseOpenAiCompatibleProvider<ModelName extends string>
 
 		const temperature = this.options.modelTemperature ?? info.defaultTemperature ?? this.defaultTemperature
 
+		// Build messages and flatten text-only to strings for compatibility
+		let convertedMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [
+			{ role: "system", content: systemPrompt },
+			...convertToOpenAiMessages(messages),
+		]
+		convertedMessages = this.flattenTextOnlyMessages(convertedMessages)
+
+		// Build params object, only including defined values to avoid validation errors
+		// Many endpoints reject undefined/null values that OpenAI SDK includes in the request
 		const params: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming = {
 			model,
-			max_tokens,
-			temperature,
-			messages: [{ role: "system", content: systemPrompt }, ...convertToOpenAiMessages(messages)],
+			messages: convertedMessages,
 			stream: true,
 			stream_options: { include_usage: true },
-			tools: this.convertToolsForOpenAI(metadata?.tools),
-			tool_choice: metadata?.tool_choice,
-			parallel_tool_calls: metadata?.parallelToolCalls ?? false,
+			// Only include optional parameters if they have meaningful values
+			...(temperature !== undefined && { temperature }),
+			...(max_tokens !== undefined && { max_tokens }),
+			...(metadata?.tool_choice !== undefined && { tool_choice: metadata.tool_choice }),
+			...(metadata?.parallelToolCalls && { parallel_tool_calls: true }),
+		}
+
+		// Add tools if provided
+		const tools = this.convertToolsForOpenAI(metadata?.tools)
+		if (tools && tools.length > 0) {
+			params.tools = tools
 		}
 
 		// Add thinking parameter if reasoning is enabled and model supports it
@@ -128,6 +224,7 @@ export abstract class BaseOpenAiCompatibleProvider<ModelName extends string>
 
 		let lastUsage: OpenAI.CompletionUsage | undefined
 		const activeToolCallIds = new Set<string>()
+		let accumulatedText = "" // Accumulate text to detect XML tool calls
 
 		for await (const chunk of stream) {
 			// Check for provider-specific error responses (e.g., MiniMax base_resp)
@@ -142,8 +239,41 @@ export abstract class BaseOpenAiCompatibleProvider<ModelName extends string>
 			const finishReason = chunk.choices?.[0]?.finish_reason
 
 			if (delta?.content) {
-				for (const processedChunk of matcher.update(delta.content)) {
-					yield processedChunk
+				// Accumulate text for XML parsing
+				accumulatedText += delta.content
+
+				// Check if we have complete XML tool calls in the accumulated text
+				if (hasXmlToolCalls(accumulatedText)) {
+					const parsed = parseXmlToolCalls(accumulatedText)
+
+					// Emit any extracted tool calls
+					for (const toolCall of parsed.toolCalls) {
+						yield {
+							type: "tool_call",
+							id: toolCall.id,
+							name: toolCall.name,
+							arguments: toolCall.arguments,
+						}
+					}
+
+					// Process the cleaned text (without XML) through the matcher
+					for (const processedChunk of matcher.update(parsed.textWithoutXml)) {
+						yield processedChunk
+					}
+
+					// Reset accumulated text after processing
+					accumulatedText = ""
+				} else if (/<tool_call/.test(accumulatedText)) {
+					// XML tool call is incomplete, buffer it without emitting
+					// This prevents partial XML from appearing in chat
+					continue
+				} else {
+					// No XML tags at all, safe to emit
+					for (const processedChunk of matcher.update(delta.content)) {
+						yield processedChunk
+					}
+					// Clear accumulated text since we've processed it
+					accumulatedText = ""
 				}
 			}
 
@@ -191,6 +321,27 @@ export abstract class BaseOpenAiCompatibleProvider<ModelName extends string>
 
 		if (lastUsage) {
 			yield this.processUsageMetrics(lastUsage, this.getModel().info)
+		}
+
+		// Final pass: check if there's any remaining accumulated text with XML
+		if (accumulatedText && hasXmlToolCalls(accumulatedText)) {
+			const parsed = parseXmlToolCalls(accumulatedText)
+			for (const toolCall of parsed.toolCalls) {
+				yield {
+					type: "tool_call",
+					id: toolCall.id,
+					name: toolCall.name,
+					arguments: toolCall.arguments,
+				}
+			}
+			for (const processedChunk of matcher.update(parsed.textWithoutXml)) {
+				yield processedChunk
+			}
+		} else if (accumulatedText) {
+			// Emit any remaining text that wasn't XML
+			for (const processedChunk of matcher.update(accumulatedText)) {
+				yield processedChunk
+			}
 		}
 
 		// Process any remaining content
