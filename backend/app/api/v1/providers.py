@@ -94,7 +94,15 @@ async def create_provider(
     db: AsyncSession = Depends(get_db),
     _api_key: str = Depends(verify_api_key),
 ):
-    """Create a new API provider."""
+    """Create a new API provider. Idempotent: returns existing provider if already exists."""
+    # Check if provider already exists
+    result = await db.execute(select(ApiProvider).where(ApiProvider.name == provider_data.name))
+    existing_provider = result.scalar_one_or_none()
+    
+    if existing_provider:
+        return ApiProviderResponse.model_validate(existing_provider)
+    
+    # Provider doesn't exist, create it
     provider = ApiProvider(
         name=provider_data.name,
         display_name=provider_data.display_name,
