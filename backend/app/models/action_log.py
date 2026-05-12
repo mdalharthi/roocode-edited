@@ -61,6 +61,9 @@ class ActionLog(Base):
     file_operation_logs: Mapped[list["FileOperationLog"]] = relationship(
         "FileOperationLog", back_populates="action_log", cascade="all, delete-orphan"
     )
+    mcp_logs: Mapped[list["McpLog"]] = relationship(
+        "McpLog", back_populates="action_log", cascade="all, delete-orphan"
+    )
 
     def __repr__(self) -> str:
         return f"<ActionLog(id={self.id}, type='{self.action_type}', name='{self.action_name}', status='{self.status}')>"
