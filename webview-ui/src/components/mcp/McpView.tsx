@@ -324,6 +324,24 @@ const ServerRow = ({ server, alwaysAllowMcp }: { server: McpServer; alwaysAllowM
 							{server.source}
 						</span>
 					)}
+					{(server as any).isBackendManaged && (
+						<span
+							title="Configuration managed by backend database"
+							style={{
+								marginLeft: "6px",
+								padding: "1px 6px",
+								fontSize: "11px",
+								borderRadius: "4px",
+								background: "var(--vscode-activityBarBadge-background, #0078d4)",
+								color: "var(--vscode-activityBarBadge-foreground, #fff)",
+								display: "inline-flex",
+								alignItems: "center",
+								gap: "3px",
+							}}>
+							<span className="codicon codicon-database" style={{ fontSize: "10px" }} />
+							{" DB"}
+						</span>
+					)}
 				</span>
 				<div
 					style={{ display: "flex", alignItems: "center", marginRight: "8px" }}

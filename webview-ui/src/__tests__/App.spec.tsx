@@ -169,6 +169,8 @@ describe("App", () => {
 			experiments: {},
 			language: "en",
 			telemetrySetting: "enabled",
+			ldapAuthChecked: true,
+			showLdapLogin: false,
 		})
 	})
 

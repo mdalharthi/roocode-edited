@@ -239,9 +239,10 @@ const ApiConfigManager = ({
 							onValueChange={handleSelectConfig}
 							options={listApiConfigMeta.map((config) => {
 								const valid = isProfileValid(config)
+								const isDbManaged = (config as any).isBackendManaged === true
 								return {
 									value: config.name,
-									label: config.name,
+									label: isDbManaged ? config.name + " [DB]" : config.name,
 									disabled: !valid,
 									icon: !valid ? (
 										<StandardTooltip content={t("settings:validation.profileInvalid")}>
