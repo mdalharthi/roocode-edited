@@ -32,6 +32,33 @@ import { t } from "../../i18n"
 
 import { ClineProvider } from "../../core/webview/ClineProvider"
 
+import { LoggingService } from "../logging/LoggingService"
+
+const MAX_PAYLOAD_SIZE = 50000
+
+function truncateMcpPayload(data: any): any {
+	if (data === undefined || data === null) return data
+	try {
+		const str = JSON.stringify(data)
+		if (str.length <= MAX_PAYLOAD_SIZE) return data
+		return {
+			_truncated: true,
+			message: `Payload too large (${str.length} bytes)`,
+			truncatedData: str.substring(0, MAX_PAYLOAD_SIZE / 2) + "...",
+		}
+	} catch (error) {
+		return { _truncated: true, message: "Failed to stringify payload" }
+	}
+}
+
+function safeLogMcpCall(data: any) {
+	try {
+		LoggingService.instance.logMcpCall(data).catch(console.error)
+	} catch (e) {
+		// Logging service not initialized, ignore
+	}
+}
+
 import { GlobalFileNames } from "../../shared/globalFileNames"
 
 import { fileExistsAtPath } from "../../utils/fs"
@@ -39,6 +66,7 @@ import { arePathsEqual, getWorkspacePath } from "../../utils/path"
 import { injectVariables } from "../../utils/config"
 import { safeWriteJson } from "../../utils/safeWriteJson"
 import { sanitizeMcpName, toolNamesMatch } from "../../utils/mcp-name"
+import { configService } from "../backend/configService"
 
 // Discriminated union for connection states
 export type ConnectedMcpConnection = {
@@ -150,6 +178,9 @@ const McpSettingsSchema = z.object({
 export class McpHub {
 	private providerRef: WeakRef<ClineProvider>
 	private disposables: vscode.Disposable[] = []
+	private isInitialSync = true
+	private isSyncing = false
+	private lastBackendServerCount = -1
 	private settingsWatcher?: vscode.FileSystemWatcher
 	private fileWatchers: Map<string, FSWatcher[]> = new Map()
 	private projectMcpWatcher?: vscode.FileSystemWatcher
@@ -161,6 +192,8 @@ export class McpHub {
 	private isProgrammaticUpdate: boolean = false
 	private flagResetTimer?: NodeJS.Timeout
 	private sanitizedNameRegistry: Map<string, string> = new Map()
+	/** Names of MCP servers whose source of truth is the backend database. */
+	private backendManagedServerNames: Set<string> = new Set()
 
 	constructor(provider: ClineProvider) {
 		this.providerRef = new WeakRef(provider)
@@ -334,7 +367,11 @@ export class McpHub {
 				return
 			}
 
-			await this.updateServerConnections(result.data.mcpServers || {}, source)
+			if (source === "global" && configService.isConfigured) {
+				await this.initializeGlobalMcpServers()
+			} else {
+				await this.updateServerConnections(result.data.mcpServers || {}, source)
+			}
 		} catch (error) {
 			// Check if the error is because the file doesn't exist
 			if (error.code === "ENOENT" && source === "project") {
@@ -456,12 +493,18 @@ export class McpHub {
 			// If existing is project and current is global, keep existing (project wins)
 		}
 
-		return Array.from(serversByName.values())
+		return Array.from(serversByName.values()).map((server) =>
+			this.backendManagedServerNames.has(server.name) ? ({ ...server, isBackendManaged: true } as any) : server,
+		)
 	}
 
 	getAllServers(): McpServer[] {
-		// Return all servers regardless of state
-		return this.connections.map((conn) => conn.server)
+		// Return all servers regardless of state, injecting isBackendManaged flag
+		return this.connections.map((conn) =>
+			this.backendManagedServerNames.has(conn.server.name)
+				? ({ ...conn.server, isBackendManaged: true } as any)
+				: conn.server,
+		)
 	}
 
 	async getMcpServersPath(): Promise<string> {
@@ -575,7 +618,81 @@ export class McpHub {
 		}
 	}
 
-	private async initializeGlobalMcpServers(): Promise<void> {
+	private async initializeGlobalMcpServers(force: boolean = false) {
+		if (this.isSyncing && !force) {
+			console.log("[McpHub] Skip initializeGlobalMcpServers: already syncing")
+			return
+		}
+
+		try {
+			this.isSyncing = true
+			console.log(`[McpHub] initializeGlobalMcpServers (force=${force}, initial=${this.isInitialSync})`)
+			const backendServers = await configService.fetchMcpServers()
+			const backendCount = Object.keys(backendServers).length
+
+			// --- SYNCHRONIZATION GUARD ---
+
+			// 1. Initial Sync Safety: If backend is empty on first run, do NOT wipe local state.
+			// This handles cases where backend is starting up or seeding is in progress.
+			if (this.isInitialSync && backendCount === 0 && !force) {
+				console.warn("[McpHub] Initial sync returned 0 servers. Skipping local wipe to prevent data loss.")
+				this.isInitialSync = false
+				return
+			}
+
+			// 2. Anomaly Detection: If backend has fewer servers than before, warn and skip unless forced.
+			// This prevents accidental deletions if the backend database is partially lost or reset.
+			if (!this.isInitialSync && backendCount < this.lastBackendServerCount && !force) {
+				console.error(
+					`[McpHub] ANOMALY DETECTED: Backend server count dropped from ${this.lastBackendServerCount} to ${backendCount}. Skipping sync to prevent unintended deletions. Use 'force refresh' to override.`,
+				)
+				return
+			}
+
+			// 3. Authority Check: Only update if we have servers or if explicitly forced.
+			if (backendCount > 0 || force) {
+				console.log(`[McpHub] Synchronizing ${backendCount} servers from backend to local config...`)
+				await this.updateMcpSettingsWithBackendServers(backendServers)
+				this.lastBackendServerCount = backendCount
+			} else {
+				console.log("[McpHub] Backend returned 0 servers. Keeping existing local configuration.")
+			}
+
+			this.isInitialSync = false
+		} catch (error) {
+			console.error("Failed to initialize global MCP servers:", error)
+		} finally {
+			this.isSyncing = false
+		}
+	}
+
+	private async updateMcpSettingsWithBackendServers(backendServers: Record<string, any>) {
+		const configPath = await this.getMcpSettingsFilePath()
+
+		// Update local tracking for UI badges
+		const cleanServers: Record<string, any> = {}
+		for (const [name, config] of Object.entries(backendServers)) {
+			const { isBackendManaged, ...cleanConfig } = config as any
+			cleanServers[name] = cleanConfig
+			this.backendManagedServerNames.add(name)
+		}
+
+		// Sync to local file so other parts of the extension see them
+		if (this.flagResetTimer) {
+			clearTimeout(this.flagResetTimer)
+		}
+		this.isProgrammaticUpdate = true
+		try {
+			await safeWriteJson(configPath, { mcpServers: cleanServers }, { prettyPrint: true })
+		} finally {
+			// Reset flag after watcher debounce period (non-blocking)
+			this.flagResetTimer = setTimeout(() => {
+				this.isProgrammaticUpdate = false
+				this.flagResetTimer = undefined
+			}, 1000) // 1000ms to safely cover FS events and watcher debounce
+		}
+
+		// Now initialize normally from the file we just updated
 		await this.initializeMcpServers("global")
 	}
 
@@ -673,6 +790,7 @@ export class McpHub {
 		// Set up file watchers for enabled servers
 		this.setupFileWatcher(name, config, source)
 
+		const startTime = Date.now()
 		try {
 			const client = new Client(
 				{
@@ -873,6 +991,13 @@ export class McpHub {
 			connection.server.tools = await this.fetchToolsList(name, source)
 			connection.server.resources = await this.fetchResourcesList(name, source)
 			connection.server.resourceTemplates = await this.fetchResourceTemplatesList(name, source)
+
+			safeLogMcpCall({
+				server_name: name,
+				request_type: "connection",
+				status_code: 200,
+				duration_ms: Date.now() - startTime,
+			})
 		} catch (error) {
 			// Update status with error
 			const connection = this.findConnection(name, source)
@@ -880,6 +1005,13 @@ export class McpHub {
 				connection.server.status = "disconnected"
 				this.appendErrorMessage(connection, error instanceof Error ? error.message : `${error}`)
 			}
+			safeLogMcpCall({
+				server_name: name,
+				request_type: "connection",
+				status_code: 500,
+				error_message: error instanceof Error ? error.message : String(error),
+				duration_ms: Date.now() - startTime,
+			})
 			throw error
 		}
 	}
@@ -962,11 +1094,15 @@ export class McpHub {
 		if (fuzzyMatch) {
 			return fuzzyMatch.server.name
 		}
-
 		return null
 	}
 
-	private async fetchToolsList(serverName: string, source?: "global" | "project"): Promise<McpTool[]> {
+	private async fetchToolsList(
+		serverName: string,
+		source?: "global" | "project",
+		actionLogId?: number,
+	): Promise<McpTool[]> {
+		const startTime = Date.now()
 		try {
 			// Use the helper method to find the connection
 			const connection = this.findConnection(serverName, source)
@@ -976,6 +1112,13 @@ export class McpHub {
 			}
 
 			const response = await connection.client.request({ method: "tools/list" }, ListToolsResultSchema)
+
+			safeLogMcpCall({
+				server_name: serverName,
+				request_type: "list_tools",
+				status_code: 200,
+				duration_ms: Date.now() - startTime,
+			})
 
 			// Determine the actual source of the server
 			const actualSource = connection.server.source || "global"
@@ -1000,20 +1143,19 @@ export class McpHub {
 					const content = await fs.readFile(configPath, "utf-8")
 					serverConfigData = JSON.parse(content)
 				}
-				if (serverConfigData) {
-					alwaysAllowConfig = serverConfigData.mcpServers?.[serverName]?.alwaysAllow || []
-					disabledToolsList = serverConfigData.mcpServers?.[serverName]?.disabledTools || []
-				}
+
+				const mcpServers = serverConfigData.mcpServers || {}
+				const serverConfig = mcpServers[serverName] || {}
+				alwaysAllowConfig = serverConfig.alwaysAllow || []
+				disabledToolsList = serverConfig.disabledTools || []
 			} catch (error) {
 				console.error(`Failed to read tool configuration for ${serverName}:`, error)
 				// Continue with empty configs
 			}
 
-			// Check if wildcard "*" is in the alwaysAllow config
+			// Add instructions to tools if they exist
 			const hasWildcard = alwaysAllowConfig.includes("*")
-
-			// Mark tools as always allowed and enabled for prompt based on settings
-			const tools = (response?.tools || []).map((tool) => ({
+			const tools = (response.tools || []).map((tool) => ({
 				...tool,
 				alwaysAllow: hasWildcard || alwaysAllowConfig.includes(tool.name),
 				enabledForPrompt: !disabledToolsList.includes(tool.name),
@@ -1022,20 +1164,48 @@ export class McpHub {
 			return tools
 		} catch (error) {
 			console.error(`Failed to fetch tools for ${serverName}:`, error)
+			safeLogMcpCall({
+				server_name: serverName,
+				request_type: "list_tools",
+				status_code: 500,
+				error_message: error instanceof Error ? error.message : String(error),
+				duration_ms: Date.now() - startTime,
+			})
 			return []
 		}
 	}
 
-	private async fetchResourcesList(serverName: string, source?: "global" | "project"): Promise<McpResource[]> {
+	private async fetchResourcesList(
+		serverName: string,
+		source?: "global" | "project",
+		actionLogId?: number,
+	): Promise<McpResource[]> {
+		const startTime = Date.now()
 		try {
 			const connection = this.findConnection(serverName, source)
 			if (!connection || connection.type !== "connected") {
 				return []
 			}
 			const response = await connection.client.request({ method: "resources/list" }, ListResourcesResultSchema)
+
+			safeLogMcpCall({
+				server_name: serverName,
+				request_type: "list_resources",
+				status_code: 200,
+				duration_ms: Date.now() - startTime,
+				action_log_id: actionLogId,
+			})
+
 			return response?.resources || []
 		} catch (error) {
 			// console.error(`Failed to fetch resources for ${serverName}:`, error)
+			safeLogMcpCall({
+				server_name: serverName,
+				request_type: "list_resources",
+				status_code: 500,
+				error_message: error instanceof Error ? error.message : String(error),
+				duration_ms: Date.now() - startTime,
+			})
 			return []
 		}
 	}
@@ -1043,7 +1213,9 @@ export class McpHub {
 	private async fetchResourceTemplatesList(
 		serverName: string,
 		source?: "global" | "project",
+		actionLogId?: number,
 	): Promise<McpResourceTemplate[]> {
+		const startTime = Date.now()
 		try {
 			const connection = this.findConnection(serverName, source)
 			if (!connection || connection.type !== "connected") {
@@ -1053,9 +1225,25 @@ export class McpHub {
 				{ method: "resources/templates/list" },
 				ListResourceTemplatesResultSchema,
 			)
+
+			safeLogMcpCall({
+				server_name: serverName,
+				request_type: "list_resource_templates",
+				status_code: 200,
+				duration_ms: Date.now() - startTime,
+				action_log_id: actionLogId,
+			})
+
 			return response?.resourceTemplates || []
 		} catch (error) {
 			// console.error(`Failed to fetch resource templates for ${serverName}:`, error)
+			safeLogMcpCall({
+				server_name: serverName,
+				request_type: "list_resource_templates",
+				status_code: 500,
+				error_message: error instanceof Error ? error.message : String(error),
+				duration_ms: Date.now() - startTime,
+			})
 			return []
 		}
 	}
@@ -1287,6 +1475,11 @@ export class McpHub {
 			return
 		}
 
+		// Force sync from backend if configured
+		if (configService.isConfigured) {
+			await this.initializeGlobalMcpServers(true)
+		}
+
 		// Check if MCP is globally enabled
 		const mcpEnabled = await this.isMcpEnabled()
 		if (!mcpEnabled) {
@@ -1484,6 +1677,22 @@ export class McpHub {
 		serverName: string,
 		source: "global" | "project" = "global",
 	): Promise<z.infer<typeof ServerConfigSchema>> {
+		// If backend is configured and this is a global server, try to fetch from backend first
+		if (configService.isConfigured && source === "global") {
+			try {
+				const backendServers = await configService.fetchMcpServers()
+				if (backendServers[serverName]) {
+					const { isBackendManaged, ...cleanConfig } = backendServers[serverName] as any
+					return this.validateServerConfig(cleanConfig, serverName)
+				}
+			} catch (backendError) {
+				console.error(
+					`[McpHub] Could not read '${serverName}' from backend, falling back to file:`,
+					backendError,
+				)
+			}
+		}
+
 		// Determine which config file to read
 		let configPath: string
 		if (source === "project") {
@@ -1605,6 +1814,21 @@ export class McpHub {
 				this.flagResetTimer = undefined
 			}, 600)
 		}
+
+		// Also sync the update to the backend DB if configured
+		if (configService.isConfigured && source === "global") {
+			try {
+				const updatedServerConfig = updatedConfig.mcpServers[serverName]
+				if (updatedServerConfig) {
+					await configService.updateMcpServer(serverName, updatedServerConfig)
+				}
+			} catch (backendError) {
+				console.error(
+					`[McpHub] Failed to sync server config update for '${serverName}' to backend:`,
+					backendError,
+				)
+			}
+		}
 	}
 
 	public async updateServerTimeout(
@@ -1630,6 +1854,8 @@ export class McpHub {
 	}
 
 	public async deleteServer(serverName: string, source?: "global" | "project"): Promise<void> {
+		console.log(`[McpHub] deleteServer called for '${serverName}' (source: ${source})`)
+		console.trace(`[McpHub] deleteServer Trace for '${serverName}'`)
 		try {
 			// Find the connection to determine if it's a global or project server
 			const connection = this.findConnection(serverName, source)
@@ -1684,6 +1910,16 @@ export class McpHub {
 
 				await safeWriteJson(configPath, updatedConfig, { prettyPrint: true })
 
+				// Also delete from backend DB if configured and this is a global server
+				if (configService.isConfigured && serverSource === "global") {
+					try {
+						await configService.deleteMcpServer(serverName)
+						this.backendManagedServerNames.delete(serverName)
+					} catch (backendError) {
+						console.error(`[McpHub] Failed to delete server '${serverName}' from backend:`, backendError)
+					}
+				}
+
 				// Update server connections with the correct source
 				await this.updateServerConnections(config.mcpServers, serverSource)
 
@@ -1697,7 +1933,12 @@ export class McpHub {
 		}
 	}
 
-	async readResource(serverName: string, uri: string, source?: "global" | "project"): Promise<McpResourceResponse> {
+	async readResource(
+		serverName: string,
+		uri: string,
+		source?: "global" | "project",
+		actionLogId?: number,
+	): Promise<McpResourceResponse> {
 		const connection = this.findConnection(serverName, source)
 		if (!connection || connection.type !== "connected") {
 			throw new Error(`No connection found for server: ${serverName}${source ? ` with source ${source}` : ""}`)
@@ -1705,15 +1946,39 @@ export class McpHub {
 		if (connection.server.disabled) {
 			throw new Error(`Server "${serverName}" is disabled`)
 		}
-		return await connection.client.request(
-			{
-				method: "resources/read",
-				params: {
-					uri,
+		const startTime = Date.now()
+		try {
+			const response = await connection.client.request(
+				{
+					method: "resources/read",
+					params: {
+						uri,
+					},
 				},
-			},
-			ReadResourceResultSchema,
-		)
+				ReadResourceResultSchema,
+			)
+			safeLogMcpCall({
+				server_name: serverName,
+				request_type: "read_resource",
+				endpoint: uri,
+				response_data: truncateMcpPayload(response),
+				status_code: 200,
+				duration_ms: Date.now() - startTime,
+				action_log_id: actionLogId,
+			})
+			return response
+		} catch (error) {
+			safeLogMcpCall({
+				server_name: serverName,
+				request_type: "read_resource",
+				endpoint: uri,
+				status_code: 500,
+				error_message: error instanceof Error ? error.message : String(error),
+				duration_ms: Date.now() - startTime,
+				action_log_id: actionLogId,
+			})
+			throw error
+		}
 	}
 
 	async callTool(
@@ -1721,6 +1986,7 @@ export class McpHub {
 		toolName: string,
 		toolArguments?: Record<string, unknown>,
 		source?: "global" | "project",
+		actionLogId?: number,
 	): Promise<McpToolCallResponse> {
 		const connection = this.findConnection(serverName, source)
 		if (!connection || connection.type !== "connected") {
@@ -1742,19 +2008,47 @@ export class McpHub {
 			timeout = 60 * 1000
 		}
 
-		return await connection.client.request(
-			{
-				method: "tools/call",
-				params: {
-					name: toolName,
-					arguments: toolArguments,
+		const startTime = Date.now()
+		try {
+			const response = await connection.client.request(
+				{
+					method: "tools/call",
+					params: {
+						name: toolName,
+						arguments: toolArguments,
+					},
 				},
-			},
-			CallToolResultSchema,
-			{
-				timeout,
-			},
-		)
+				CallToolResultSchema,
+				{
+					timeout,
+				},
+			)
+
+			safeLogMcpCall({
+				server_name: serverName,
+				request_type: "tool_call",
+				endpoint: toolName,
+				request_data: truncateMcpPayload(toolArguments),
+				response_data: truncateMcpPayload(response),
+				status_code: 200,
+				duration_ms: Date.now() - startTime,
+				action_log_id: actionLogId,
+			})
+
+			return response
+		} catch (error) {
+			safeLogMcpCall({
+				server_name: serverName,
+				request_type: "tool_call",
+				endpoint: toolName,
+				request_data: truncateMcpPayload(toolArguments),
+				status_code: 500,
+				error_message: error instanceof Error ? error.message : String(error),
+				duration_ms: Date.now() - startTime,
+				action_log_id: actionLogId,
+			})
+			throw error
+		}
 	}
 
 	/**

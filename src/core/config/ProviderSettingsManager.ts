@@ -17,6 +17,7 @@ import { TelemetryService } from "@roo-code/telemetry"
 
 import { Mode, modes } from "../../shared/modes"
 import { buildApiHandler } from "../../api"
+import { configService } from "../../services/backend/configService"
 
 // Type-safe model migrations mapping
 type ModelMigrations = {
@@ -339,6 +340,9 @@ export class ProviderSettingsManager {
 					id: apiConfig.id || "",
 					apiProvider: apiConfig.apiProvider,
 					modelId: this.cleanModelId(getModelId(apiConfig)),
+					// Pass through the backend-managed flag if present (not a standard ProviderSettingsEntry field,
+					// but the webview reads it as (config as any).isBackendManaged for the DB badge)
+					...((apiConfig as any).isBackendManaged ? { isBackendManaged: true } : {}),
 				}))
 			})
 		} catch (error) {
@@ -362,6 +366,15 @@ export class ProviderSettingsManager {
 				// Filter out settings from other providers.
 				const filteredConfig = discriminatedProviderSettingsWithIdSchema.parse(config)
 				providerProfiles.apiConfigs[name] = { ...filteredConfig, id }
+
+				if (configService.isConfigured) {
+					try {
+						await configService.updateApiProvider(id, filteredConfig)
+					} catch (e) {
+						await configService.createApiProvider({ ...filteredConfig, id })
+					}
+				}
+
 				await this.store(providerProfiles)
 				return id
 			})
@@ -429,9 +442,6 @@ export class ProviderSettingsManager {
 		}
 	}
 
-	/**
-	 * Delete a config by name.
-	 */
 	public async deleteConfig(name: string) {
 		try {
 			return await this.lock(async () => {
@@ -443,6 +453,10 @@ export class ProviderSettingsManager {
 
 				if (Object.keys(providerProfiles.apiConfigs).length === 1) {
 					throw new Error(`Cannot delete the last remaining configuration`)
+				}
+
+				if (configService.isConfigured) {
+					await configService.deleteApiProvider(name)
 				}
 
 				delete providerProfiles.apiConfigs[name]
@@ -576,6 +590,18 @@ export class ProviderSettingsManager {
 					apiConfigs: z.record(z.string(), z.any()),
 				})
 				.parse(JSON.parse(content))
+
+			if (configService.isConfigured) {
+				const backendProviders = await configService.fetchApiProviders()
+				const backendConfigs = backendProviders.reduce(
+					(acc, p) => ({ ...acc, [p.id!]: p }),
+					{} as Record<string, ProviderSettingsWithId>,
+				)
+				return {
+					...providerProfiles,
+					apiConfigs: backendConfigs,
+				}
+			}
 
 			const apiConfigs = Object.entries(providerProfiles.apiConfigs).reduce(
 				(acc, [key, apiConfig]) => {
