@@ -78,6 +78,8 @@ async def init_db() -> None:
             user_interaction_log,
             file_operation_log,
             extension_version,
+            mcp_log,
+            mcp_server,
         )
         logging.info("Models imported successfully")
     except Exception as e:

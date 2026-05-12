@@ -272,6 +272,50 @@ class FileOperationLogListResponse(BaseModel):
 
 
 # =====================
+# MCP Log Schemas
+# =====================
+
+
+class McpLogBase(BaseModel):
+    """Base schema for MCP log."""
+
+    session_id: str = Field(..., max_length=255)
+    action_log_id: Optional[int] = None
+    server_name: str = Field(..., max_length=255)
+    request_type: str = Field(..., max_length=100)
+    endpoint: Optional[str] = Field(None, max_length=255)
+    request_data: Optional[dict | list | str] = None
+    response_data: Optional[dict | list | str] = None
+    status_code: Optional[int] = None
+    error_message: Optional[str] = None
+    duration_ms: Optional[int] = Field(None, ge=0)
+
+
+class McpLogCreate(McpLogBase):
+    """Schema for creating MCP log."""
+    client_action_log_id: Optional[int] = None  # For batch correlation
+    pass
+
+
+class McpLogResponse(McpLogBase):
+    """Schema for MCP log response."""
+
+    id: int
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class McpLogListResponse(BaseModel):
+    """Schema for paginated MCP log list."""
+
+    logs: list[McpLogResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+# =====================
 # Batch Log Schemas
 # =====================
 
@@ -284,6 +328,7 @@ class BatchLogCreate(BaseModel):
     performance_logs: Optional[list[PerformanceLogCreate]] = None
     user_interaction_logs: Optional[list[UserInteractionLogCreate]] = None
     file_operation_logs: Optional[list[FileOperationLogCreate]] = None
+    mcp_logs: Optional[list[McpLogCreate]] = None
 
 
 class BatchLogResponse(BaseModel):
@@ -294,6 +339,7 @@ class BatchLogResponse(BaseModel):
     performance_logs_created: int = 0
     user_interaction_logs_created: int = 0
     file_operation_logs_created: int = 0
+    mcp_logs_created: int = 0
     total_created: int = 0
     errors: list[str] = []
     id_map: Optional[dict[int, int]] = None  # Map of client_action_log_id to real action_log_id

@@ -88,6 +88,7 @@ class ApiProviderUpdate(BaseModel):
     rate_limit_requests_per_hour: Optional[int] = Field(None, gt=0)
     rate_limit_requests_per_day: Optional[int] = Field(None, gt=0)
     config_metadata: Optional[Dict[str, Any]] = None
+    provider_type: Optional[str] = None
     updated_by: Optional[str] = Field(None, max_length=100)
 
 

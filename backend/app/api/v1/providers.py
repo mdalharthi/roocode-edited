@@ -178,3 +178,50 @@ async def delete_provider(
     await db.commit()
 
     return None
+@router.patch("/providers/by-name/{name}", response_model=ApiProviderResponse)
+async def update_provider_by_name(
+    name: str,
+    provider_data: ApiProviderUpdate,
+    db: AsyncSession = Depends(get_db),
+    _api_key: str = Depends(verify_api_key),
+):
+    """Update an existing API provider by name (partial update)."""
+    result = await db.execute(select(ApiProvider).where(ApiProvider.name == name))
+    provider = result.scalar_one_or_none()
+
+    if not provider:
+        raise NotFoundException(f"Provider with name '{name}' not found")
+
+    update_data = provider_data.model_dump(exclude_unset=True)
+    update_data["version"] = provider.version + 1
+
+    for key, value in update_data.items():
+        setattr(provider, key, value)
+
+    try:
+        await db.commit()
+        await db.refresh(provider)
+    except IntegrityError as e:
+        await db.rollback()
+        raise ConflictException(f"Update conflict: {str(e)}")
+
+    return ApiProviderResponse.model_validate(provider)
+
+
+@router.delete("/providers/by-name/{name}", status_code=204)
+async def delete_provider_by_name(
+    name: str,
+    db: AsyncSession = Depends(get_db),
+    _api_key: str = Depends(verify_api_key),
+):
+    """Delete an API provider by name."""
+    result = await db.execute(select(ApiProvider).where(ApiProvider.name == name))
+    provider = result.scalar_one_or_none()
+
+    if not provider:
+        raise NotFoundException(f"Provider with name '{name}' not found")
+
+    await db.delete(provider)
+    await db.commit()
+
+    return None

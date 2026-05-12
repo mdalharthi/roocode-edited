@@ -7,10 +7,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.database import init_db, close_db
+from app.database import init_db, close_db, AsyncSessionLocal
 from app.core.logging import setup_logging
 from app.core.middleware import LoggingMiddleware, ExceptionMiddleware
-from app.api.v1 import health, providers, logs, version, batch, users
+from app.api.v1 import health, providers, logs, version, batch, users, mcp_servers
+from app.seeds.mcp_servers import seed_default_mcp_servers
 
 
 @asynccontextmanager
@@ -34,6 +35,11 @@ async def lifespan(app: FastAPI):
     logger.info("=" * 80)
 
     await init_db()
+
+    # Run seeds – inserts default rows if they don't exist yet
+    async with AsyncSessionLocal() as session:
+        await seed_default_mcp_servers(session)
+
     yield
     # Shutdown
     await close_db()
@@ -72,6 +78,8 @@ app.include_router(logs.router, prefix=API_V1_PREFIX, tags=["Logs"])
 app.include_router(version.router, prefix=API_V1_PREFIX, tags=["Version Control"])
 app.include_router(batch.router, prefix=API_V1_PREFIX, tags=["Batch Operations"])
 app.include_router(users.router, prefix=API_V1_PREFIX, tags=["Users"])
+app.include_router(mcp_servers.router, prefix=API_V1_PREFIX, tags=["MCP Servers"])
+
 
 
 @app.get("/")

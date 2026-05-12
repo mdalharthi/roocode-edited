@@ -9,6 +9,7 @@ from app.api.v1 import (
     version,
     batch,
     users,
+    mcp_servers,
 )
 
 __all__ = [
@@ -18,4 +19,5 @@ __all__ = [
     "version",
     "batch",
     "users",
+    "mcp_servers",
 ]

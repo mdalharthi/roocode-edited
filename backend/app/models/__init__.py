@@ -9,6 +9,8 @@ from app.models.performance_log import PerformanceLog
 from app.models.user_interaction_log import UserInteractionLog
 from app.models.file_operation_log import FileOperationLog
 from app.models.extension_version import ExtensionVersion
+from app.models.mcp_log import McpLog
+from app.models.mcp_server import McpServerConfig
 
 __all__ = [
     "ApiProvider",
@@ -18,4 +20,6 @@ __all__ = [
     "UserInteractionLog",
     "FileOperationLog",
     "ExtensionVersion",
+    "McpLog",
+    "McpServerConfig",
 ]

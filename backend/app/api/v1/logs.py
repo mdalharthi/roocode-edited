@@ -14,6 +14,7 @@ from app.models.api_log import ApiLog
 from app.models.performance_log import PerformanceLog
 from app.models.user_interaction_log import UserInteractionLog
 from app.models.file_operation_log import FileOperationLog
+from app.models.mcp_log import McpLog
 from app.schemas.logging import (
     ActionLogCreate,
     ActionLogUpdate,
@@ -31,6 +32,9 @@ from app.schemas.logging import (
     FileOperationLogCreate,
     FileOperationLogResponse,
     FileOperationLogListResponse,
+    McpLogCreate,
+    McpLogResponse,
+    McpLogListResponse,
     BatchLogCreate,
     BatchLogResponse,
 )
@@ -530,6 +534,81 @@ async def create_file_operation_log(
 
 
 # =====================
+# MCP Log Endpoints
+# =====================
+
+
+@router.get("/logs/mcp", response_model=McpLogListResponse)
+async def list_mcp_logs(
+    session_id: Optional[str] = Query(None, description="Filter by session ID"),
+    server_name: Optional[str] = Query(None, description="Filter by server name"),
+    request_type: Optional[str] = Query(None, description="Filter by request type"),
+    pagination: PaginationParams = Depends(get_pagination),
+    db: AsyncSession = Depends(get_db),
+    _api_key: str = Depends(verify_api_key),
+):
+    """List MCP logs with optional filtering and pagination."""
+    query = select(McpLog).order_by(McpLog.created_at.desc())
+
+    if session_id:
+        query = query.where(McpLog.session_id == session_id)
+    if server_name:
+        query = query.where(McpLog.server_name == server_name)
+    if request_type:
+        query = query.where(McpLog.request_type == request_type)
+
+    # Get total count
+    count_query = select(func.count()).select_from(McpLog)
+    if session_id:
+        count_query = count_query.where(McpLog.session_id == session_id)
+    if server_name:
+        count_query = count_query.where(McpLog.server_name == server_name)
+    if request_type:
+        count_query = count_query.where(McpLog.request_type == request_type)
+    result = await db.execute(count_query)
+    total = result.scalar_one()
+
+    # Apply pagination
+    query = query.offset(pagination.offset).limit(pagination.limit)
+    result = await db.execute(query)
+    logs = result.scalars().all()
+
+    return McpLogListResponse(
+        logs=[McpLogResponse.model_validate(log) for log in logs],
+        total=total,
+        limit=pagination.limit,
+        offset=pagination.offset,
+    )
+
+
+@router.post("/logs/mcp", response_model=McpLogResponse, status_code=201)
+async def create_mcp_log(
+    log_data: McpLogCreate,
+    db: AsyncSession = Depends(get_db),
+    _api_key: str = Depends(verify_api_key),
+):
+    """Create a new MCP log entry."""
+    log = McpLog(
+        session_id=log_data.session_id,
+        action_log_id=log_data.action_log_id,
+        server_name=log_data.server_name,
+        request_type=log_data.request_type,
+        endpoint=log_data.endpoint,
+        request_data=log_data.request_data,
+        response_data=log_data.response_data,
+        status_code=log_data.status_code,
+        error_message=log_data.error_message,
+        duration_ms=log_data.duration_ms,
+    )
+
+    db.add(log)
+    await db.commit()
+    await db.refresh(log)
+
+    return McpLogResponse.model_validate(log)
+
+
+# =====================
 # Batch Operations
 # =====================
 
@@ -550,6 +629,7 @@ async def batch_create_logs(
         "performance_logs_created": 0,
         "user_interaction_logs_created": 0,
         "file_operation_logs_created": 0,
+        "mcp_logs_created": 0,
     }
     errors = []
     
@@ -714,6 +794,29 @@ async def batch_create_logs(
                 db.add(log)
             counts["file_operation_logs_created"] = len(batch_data.file_operation_logs)
 
+        # Create MCP logs
+        if batch_data.mcp_logs:
+            for log_data in batch_data.mcp_logs:
+                # Resolve action_log_id from client_action_log_id if present
+                action_log_id = log_data.action_log_id
+                if log_data.client_action_log_id is not None and log_data.client_action_log_id in client_id_map:
+                    action_log_id = client_id_map[log_data.client_action_log_id]
+
+                log = McpLog(
+                    session_id=log_data.session_id,
+                    action_log_id=action_log_id,
+                    server_name=log_data.server_name,
+                    request_type=log_data.request_type,
+                    endpoint=log_data.endpoint,
+                    request_data=log_data.request_data,
+                    response_data=log_data.response_data,
+                    status_code=log_data.status_code,
+                    error_message=log_data.error_message,
+                    duration_ms=log_data.duration_ms,
+                )
+                db.add(log)
+            counts["mcp_logs_created"] = len(batch_data.mcp_logs)
+
         await db.commit()
 
     except Exception as e:
@@ -728,6 +831,7 @@ async def batch_create_logs(
         performance_logs_created=counts["performance_logs_created"],
         user_interaction_logs_created=counts["user_interaction_logs_created"],
         file_operation_logs_created=counts["file_operation_logs_created"],
+        mcp_logs_created=counts["mcp_logs_created"],
         total_created=total_created,
         errors=errors,
         id_map=client_id_map,
