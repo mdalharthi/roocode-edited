@@ -13,6 +13,8 @@ import type { ToolParamName, ToolResponse, ToolUse, McpToolUse } from "../../sha
 
 import { AskIgnoredError } from "../task/AskIgnoredError"
 import { Task } from "../task/Task"
+import { ActionLogger } from "../../services/logging/helpers/actionLogHelper"
+import { actionLogContext } from "../../services/logging/actionContext"
 
 import { fetchInstructionsTool } from "../tools/FetchInstructionsTool"
 import { listFilesTool } from "../tools/ListFilesTool"
@@ -284,11 +286,27 @@ export async function presentAssistantMessage(cline: Task) {
 				},
 			}
 
-			await useMcpToolTool.handle(cline, syntheticToolUse, {
-				askApproval,
-				handleError,
-				pushToolResult,
+			const actionLogger = new ActionLogger({
+				actionType: "tool_execution",
+				actionName: `mcp_${mcpBlock.serverName}_${mcpBlock.toolName}`,
+				inputData: mcpBlock.arguments,
 			})
+			await actionLogger.start()
+			cline.currentActionLogId = actionLogger.getLogId()
+
+			try {
+				await useMcpToolTool.handle(cline, syntheticToolUse, {
+					askApproval,
+					handleError,
+					pushToolResult,
+				})
+				await actionLogger.success()
+			} catch (error) {
+				await actionLogger.error(error as Error)
+				throw error
+			} finally {
+				cline.currentActionLogId = null
+			}
 			break
 		}
 		case "text": {
@@ -725,248 +743,225 @@ export async function presentAssistantMessage(cline: Task) {
 				}
 			}
 
-			switch (block.name) {
-				case "write_to_file":
-					await checkpointSaveAndMark(cline)
-					await writeToFileTool.handle(cline, block as ToolUse<"write_to_file">, {
-						askApproval,
-						handleError,
-						pushToolResult,
-					})
-					break
-				case "update_todo_list":
-					await updateTodoListTool.handle(cline, block as ToolUse<"update_todo_list">, {
-						askApproval,
-						handleError,
-						pushToolResult,
-					})
-					break
-				case "apply_diff":
-					await checkpointSaveAndMark(cline)
-					await applyDiffToolClass.handle(cline, block as ToolUse<"apply_diff">, {
-						askApproval,
-						handleError,
-						pushToolResult,
-					})
-					break
-				case "search_and_replace":
-					await checkpointSaveAndMark(cline)
-					await searchAndReplaceTool.handle(cline, block as ToolUse<"search_and_replace">, {
-						askApproval,
-						handleError,
-						pushToolResult,
-					})
-					break
-				case "search_replace":
-					await checkpointSaveAndMark(cline)
-					await searchReplaceTool.handle(cline, block as ToolUse<"search_replace">, {
-						askApproval,
-						handleError,
-						pushToolResult,
-					})
-					break
-				case "edit_file":
-					await checkpointSaveAndMark(cline)
-					await editFileTool.handle(cline, block as ToolUse<"edit_file">, {
-						askApproval,
-						handleError,
-						pushToolResult,
-					})
-					break
-				case "apply_patch":
-					await checkpointSaveAndMark(cline)
-					await applyPatchTool.handle(cline, block as ToolUse<"apply_patch">, {
-						askApproval,
-						handleError,
-						pushToolResult,
-					})
-					break
-				case "read_file":
-					// Type assertion is safe here because we're in the "read_file" case
-					await readFileTool.handle(cline, block as ToolUse<"read_file">, {
-						askApproval,
-						handleError,
-						pushToolResult,
-					})
-					break
-				case "fetch_instructions":
-					await fetchInstructionsTool.handle(cline, block as ToolUse<"fetch_instructions">, {
-						askApproval,
-						handleError,
-						pushToolResult,
-					})
-					break
-				case "list_files":
-					await listFilesTool.handle(cline, block as ToolUse<"list_files">, {
-						askApproval,
-						handleError,
-						pushToolResult,
-					})
-					break
-				case "codebase_search":
-					await codebaseSearchTool.handle(cline, block as ToolUse<"codebase_search">, {
-						askApproval,
-						handleError,
-						pushToolResult,
-					})
-					break
-				case "search_files":
-					await searchFilesTool.handle(cline, block as ToolUse<"search_files">, {
-						askApproval,
-						handleError,
-						pushToolResult,
-					})
-					break
-				case "browser_action":
-					await browserActionTool(
-						cline,
-						block as ToolUse<"browser_action">,
-						askApproval,
-						handleError,
-						pushToolResult,
-					)
-					break
-				case "execute_command":
-					await executeCommandTool.handle(cline, block as ToolUse<"execute_command">, {
-						askApproval,
-						handleError,
-						pushToolResult,
-					})
-					break
-				case "use_mcp_tool":
-					await useMcpToolTool.handle(cline, block as ToolUse<"use_mcp_tool">, {
-						askApproval,
-						handleError,
-						pushToolResult,
-					})
-					break
-				case "access_mcp_resource":
-					await accessMcpResourceTool.handle(cline, block as ToolUse<"access_mcp_resource">, {
-						askApproval,
-						handleError,
-						pushToolResult,
-					})
-					break
-				case "ask_followup_question":
-					await askFollowupQuestionTool.handle(cline, block as ToolUse<"ask_followup_question">, {
-						askApproval,
-						handleError,
-						pushToolResult,
-					})
-					break
-				case "switch_mode":
-					await switchModeTool.handle(cline, block as ToolUse<"switch_mode">, {
-						askApproval,
-						handleError,
-						pushToolResult,
-					})
-					break
-				case "new_task":
-					await newTaskTool.handle(cline, block as ToolUse<"new_task">, {
-						askApproval,
-						handleError,
-						pushToolResult,
-						toolCallId: block.id,
-					})
-					break
-				case "attempt_completion": {
-					const completionCallbacks: AttemptCompletionCallbacks = {
-						askApproval,
-						handleError,
-						pushToolResult,
-						askFinishSubTaskApproval,
-						toolDescription,
-					}
-					await attemptCompletionTool.handle(
-						cline,
-						block as ToolUse<"attempt_completion">,
-						completionCallbacks,
-					)
-					break
-				}
-				case "run_slash_command":
-					await runSlashCommandTool.handle(cline, block as ToolUse<"run_slash_command">, {
-						askApproval,
-						handleError,
-						pushToolResult,
-					})
-					break
-				case "generate_image":
-					await checkpointSaveAndMark(cline)
-					await generateImageTool.handle(cline, block as ToolUse<"generate_image">, {
-						askApproval,
-						handleError,
-						pushToolResult,
-					})
-					break
-				default: {
-					// Handle unknown/invalid tool names OR custom tools
-					// This is critical for native tool calling where every tool_use MUST have a tool_result
+			// Track tool execution action
+			const isFinal = !block.partial
+			let actionLogger: ActionLogger | undefined
+			if (isFinal) {
+				actionLogger = new ActionLogger({
+					actionType: "tool_execution",
+					actionName: block.name,
+					inputData: block.nativeArgs || block.params,
+				})
+				await actionLogger.start()
+				cline.currentActionLogId = actionLogger.getLogId()
+			}
 
-					// CRITICAL: Don't process partial blocks for unknown tools - just let them stream in.
-					// If we try to show errors for partial blocks, we'd show the error on every streaming chunk,
-					// creating a loop that appears to freeze the extension. Only handle complete blocks.
-					if (block.partial) {
-						break
-					}
+			try {
+				const logId = actionLogger?.getLogId()
 
-					const customTool = stateExperiments?.customTools ? customToolRegistry.get(block.name) : undefined
-
-					if (customTool) {
-						try {
-							let customToolArgs
-
-							if (customTool.parameters) {
-								try {
-									customToolArgs = customTool.parameters.parse(block.nativeArgs || block.params || {})
-								} catch (parseParamsError) {
-									const message = `Custom tool "${block.name}" argument validation failed: ${parseParamsError.message}`
-									console.error(message)
-									cline.consecutiveMistakeCount++
-									await cline.say("error", message)
-									pushToolResult(formatResponse.toolError(message))
+				const executeTool = async () => {
+					switch (block.name) {
+						case "write_to_file":
+							await checkpointSaveAndMark(cline)
+							await writeToFileTool.handle(cline, block as ToolUse<"write_to_file">, {
+								askApproval,
+								handleError,
+								pushToolResult,
+							})
+							break
+						case "update_todo_list":
+							await updateTodoListTool.handle(cline, block as ToolUse<"update_todo_list">, {
+								askApproval,
+								handleError,
+								pushToolResult,
+							})
+							break
+						case "apply_diff":
+							await checkpointSaveAndMark(cline)
+							await applyDiffToolClass.handle(cline, block as ToolUse<"apply_diff">, {
+								askApproval,
+								handleError,
+								pushToolResult,
+							})
+							break
+						case "search_and_replace":
+							await checkpointSaveAndMark(cline)
+							await searchAndReplaceTool.handle(cline, block as ToolUse<"search_and_replace">, {
+								askApproval,
+								handleError,
+								pushToolResult,
+							})
+							break
+						case "search_replace":
+							await checkpointSaveAndMark(cline)
+							await searchReplaceTool.handle(cline, block as ToolUse<"search_replace">, {
+								askApproval,
+								handleError,
+								pushToolResult,
+							})
+							break
+						case "edit_file":
+							await checkpointSaveAndMark(cline)
+							await editFileTool.handle(cline, block as ToolUse<"edit_file">, {
+								askApproval,
+								handleError,
+								pushToolResult,
+							})
+							break
+						case "apply_patch":
+							await checkpointSaveAndMark(cline)
+							await applyPatchTool.handle(cline, block as ToolUse<"apply_patch">, {
+								askApproval,
+								handleError,
+								pushToolResult,
+							})
+							break
+						case "list_files":
+							await listFilesTool.handle(cline, block as ToolUse<"list_files">, {
+								askApproval,
+								handleError,
+								pushToolResult,
+							})
+							break
+						case "read_file":
+							await readFileTool.handle(cline, block as ToolUse<"read_file">, {
+								askApproval,
+								handleError,
+								pushToolResult,
+							})
+							break
+						case "search_files":
+							await searchFilesTool.handle(cline, block as ToolUse<"search_files">, {
+								askApproval,
+								handleError,
+								pushToolResult,
+							})
+							break
+						case "browser_action":
+							await browserActionTool(
+								cline,
+								block as ToolUse<"browser_action">,
+								askApproval,
+								handleError,
+								pushToolResult,
+							)
+							break
+						case "execute_command":
+							await executeCommandTool.handle(cline, block as ToolUse<"execute_command">, {
+								askApproval,
+								handleError,
+								pushToolResult,
+							})
+							break
+						case "use_mcp_tool":
+							await useMcpToolTool.handle(cline, block as ToolUse<"use_mcp_tool">, {
+								askApproval,
+								handleError,
+								pushToolResult,
+							})
+							break
+						case "access_mcp_resource":
+							await (accessMcpResourceTool as any).handle(
+								cline,
+								block as ToolUse<"access_mcp_resource">,
+								{
+									askApproval,
+									handleError,
+									pushToolResult,
+								},
+							)
+							break
+						case "ask_followup_question":
+							await askFollowupQuestionTool.handle(cline, block as ToolUse<"ask_followup_question">, {
+								askApproval,
+								handleError,
+								pushToolResult,
+							})
+							break
+						case "switch_mode":
+							await switchModeTool.handle(cline, block as ToolUse<"switch_mode">, {
+								askApproval,
+								handleError,
+								pushToolResult,
+							})
+							break
+						case "attempt_completion":
+							await attemptCompletionTool.handle(cline, block as ToolUse<"attempt_completion">, {
+								askApproval,
+								handleError,
+								pushToolResult,
+							})
+							break
+						case "new_task":
+							await (newTaskTool as any).handle(cline, block as ToolUse<"new_task">, {
+								askApproval,
+								handleError,
+								pushToolResult,
+							})
+							break
+						case "run_slash_command":
+							await runSlashCommandTool.handle(cline, block as ToolUse<"run_slash_command">, {
+								askApproval,
+								handleError,
+								pushToolResult,
+							})
+							break
+						case "generate_image":
+							await generateImageTool.handle(cline, block as ToolUse<"generate_image">, {
+								askApproval,
+								handleError,
+								pushToolResult,
+							})
+							break
+						case "codebase_search":
+							await codebaseSearchTool.handle(cline, block as ToolUse<"codebase_search">, {
+								askApproval,
+								handleError,
+								pushToolResult,
+							})
+							break
+						case "fetch_instructions":
+							await fetchInstructionsTool.handle(cline, block as ToolUse<"fetch_instructions">, {
+								askApproval,
+								handleError,
+								pushToolResult,
+							})
+							break
+						default:
+							// Handle custom tools
+							if (isValidToolName(block.name)) {
+								const tool = (customToolRegistry as any).get(block.name)
+								if (tool) {
+									// validation is handled within the tool or elsewhere
+									await (tool as any).handle(cline, block, {
+										askApproval,
+										handleError,
+										pushToolResult,
+									})
 									break
 								}
 							}
-
-							const result = await customTool.execute(customToolArgs, {
-								mode: mode ?? defaultModeSlug,
-								task: cline,
-							})
-
-							console.log(
-								`${customTool.name}.execute(): ${JSON.stringify(customToolArgs)} -> ${JSON.stringify(result)}`,
-							)
-
-							pushToolResult(result)
-							cline.consecutiveMistakeCount = 0
-						} catch (executionError: any) {
-							cline.consecutiveMistakeCount++
-							// Record custom tool error with static name
-							cline.recordToolError("custom_tool", executionError.message)
-							await handleError(`executing custom tool "${block.name}"`, executionError)
-						}
-
-						break
+							break
 					}
-
-					// Not a custom tool - handle as unknown tool error
-					const errorMessage = `Unknown tool "${block.name}". This tool does not exist. Please use one of the available tools.`
-					cline.consecutiveMistakeCount++
-					cline.recordToolError(block.name as ToolName, errorMessage)
-					await cline.say("error", t("tools:unknownToolError", { toolName: block.name }))
-					// Push tool_result directly WITHOUT setting didAlreadyUseTool
-					// This prevents the stream from being interrupted with "Response interrupted by tool use result"
-					cline.pushToolResultToUserContent({
-						type: "tool_result",
-						tool_use_id: toolCallId,
-						content: formatResponse.toolError(errorMessage),
-						is_error: true,
-					})
-					break
 				}
-			}
 
+				if (logId) {
+					await actionLogContext.run(logId, executeTool)
+				} else {
+					await executeTool()
+				}
+
+				if (actionLogger) {
+					await actionLogger.success()
+				}
+			} catch (error) {
+				if (actionLogger) {
+					await actionLogger.error(error as Error)
+				}
+				throw error
+			} finally {
+				cline.currentActionLogId = null
+			}
 			break
 		}
 	}

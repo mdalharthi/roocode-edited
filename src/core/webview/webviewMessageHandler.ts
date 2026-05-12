@@ -650,21 +650,23 @@ export const webviewMessageHandler = async (
 			{
 				const logger = await logCreateTask({ text: message.text, hasImages: !!message.images?.length })
 
-				try {
-					const resolved = await resolveIncomingImages({ text: message.text, images: message.images })
-					await provider.createTask(resolved.text, resolved.images)
-					// Task created successfully - notify the UI to reset
-					await provider.postMessageToWebview({ type: "invoke", invoke: "newChat" })
-					await logger.success({ status: "success" })
-				} catch (error) {
-					await logger.error(error as Error)
-					// For all errors, reset the UI and show error
-					await provider.postMessageToWebview({ type: "invoke", invoke: "newChat" })
-					// Show error to user
-					vscode.window.showErrorMessage(
-						`Failed to create task: ${error instanceof Error ? error.message : String(error)}`,
-					)
-				}
+				await logger.run(async () => {
+					try {
+						const resolved = await resolveIncomingImages({ text: message.text, images: message.images })
+						await provider.createTask(resolved.text, resolved.images)
+						// Task created successfully - notify the UI to reset
+						await provider.postMessageToWebview({ type: "invoke", invoke: "newChat" })
+						await logger.success({ status: "success" })
+					} catch (error) {
+						await logger.error(error as Error)
+						// For all errors, reset the UI and show error
+						await provider.postMessageToWebview({ type: "invoke", invoke: "newChat" })
+						// Show error to user
+						vscode.window.showErrorMessage(
+							`Failed to create task: ${error instanceof Error ? error.message : String(error)}`,
+						)
+					}
+				})
 			}
 			break
 		case "customInstructions":

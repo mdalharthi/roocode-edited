@@ -97,6 +97,7 @@ import { Task } from "../task/Task"
 import { getSystemPromptFilePath } from "../prompts/sections/custom-system-prompt"
 
 import { webviewMessageHandler } from "./webviewMessageHandler"
+import { ActionLogger } from "../../services/logging/helpers/actionLogHelper"
 import type { ClineMessage, TodoItem } from "@roo-code/types"
 import { readApiMessages, saveApiMessages, saveTaskMessages } from "../task-persistence"
 import { readTaskMessages } from "../task-persistence/taskMessages"
@@ -1271,8 +1272,25 @@ export class ClineProvider
 	 * @param webview A reference to the extension webview
 	 */
 	private setWebviewMessageListener(webview: vscode.Webview) {
-		const onReceiveMessage = async (message: WebviewMessage) =>
-			webviewMessageHandler(this, message, this.marketplaceManager)
+		const onReceiveMessage = async (message: WebviewMessage) => {
+			const logger = new ActionLogger({
+				actionType: "user_interaction",
+				actionName: message.type,
+				metadata: { messageType: message.type },
+			})
+			await logger.start()
+
+			return await logger.run(async () => {
+				try {
+					const result = await webviewMessageHandler(this, message, this.marketplaceManager)
+					await logger.success({ messageType: message.type })
+					return result
+				} catch (error) {
+					await logger.error(error as Error)
+					throw error
+				}
+			})
+		}
 
 		const messageDisposable = webview.onDidReceiveMessage(onReceiveMessage)
 		this.webviewDisposables.push(messageDisposable)

@@ -293,7 +293,10 @@ export class UseMcpToolTool extends BaseTool<"use_mcp_tool"> {
 			toolName,
 		})
 
-		const toolResult = await task.providerRef.deref()?.getMcpHub()?.callTool(serverName, toolName, parsedArguments)
+		const toolResult = await task.providerRef
+			.deref()
+			?.getMcpHub()
+			?.callTool(serverName, toolName, parsedArguments, undefined, task.currentActionLogId || undefined)
 
 		let toolResultPretty = "(No response)"
 
