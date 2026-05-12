@@ -98,6 +98,8 @@ import { buildNativeToolsArrayWithRestrictions } from "./build-tools"
 // core modules
 import { ToolRepetitionDetector } from "../tools/ToolRepetitionDetector"
 import { restoreTodoListForTask } from "../tools/UpdateTodoListTool"
+import { ActionLogger } from "../../services/logging/helpers/actionLogHelper"
+import { actionLogContext } from "../../services/logging/actionContext"
 import { FileContextTracker } from "../context-tracking/FileContextTracker"
 import { RooIgnoreController } from "../ignore/RooIgnoreController"
 import { RooProtectedController } from "../protect/RooProtectedController"
@@ -181,6 +183,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	readonly metadata: TaskMetadata
 
 	todoList?: TodoItem[]
+	currentActionLogId: number | null = null
 
 	readonly rootTask: Task | undefined = undefined
 	readonly parentTask: Task | undefined = undefined
@@ -2498,7 +2501,24 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.emit(RooCodeEventName.TaskStarted)
 
 		while (!this.abort) {
-			const didEndLoop = await this.recursivelyMakeClineRequests(nextUserContent, includeFileDetails)
+			const logger = new ActionLogger({
+				actionType: "agent_turn",
+				actionName: "recursivelyMakeClineRequests",
+				metadata: { taskId: this.taskId },
+			})
+			await logger.start()
+
+			const didEndLoop = await logger.run(async () => {
+				try {
+					const result = await this.recursivelyMakeClineRequests(nextUserContent, includeFileDetails)
+					await logger.success({ didEndLoop: result })
+					return result
+				} catch (error) {
+					await logger.error(error as Error)
+					throw error
+				}
+			})
+
 			includeFileDetails = false // We only need file details the first time.
 
 			// The way this agentic loop works is that cline will be given a

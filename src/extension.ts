@@ -33,6 +33,7 @@ import { CodeIndexManager } from "./services/code-index/manager"
 import { MdmService } from "./services/mdm/MdmService"
 import { migrateSettings } from "./utils/migrateSettings"
 import { autoImportSettings } from "./utils/autoImportSettings"
+import { ActionLogger } from "./services/logging/helpers/actionLogHelper"
 import { API } from "./extension/api"
 import { initializeBackendServices } from "./services/backend/initializeBackendServices"
 
@@ -129,8 +130,16 @@ export async function activate(context: vscode.ExtensionContext) {
 
 	// Log extension activation
 	const { logExtensionActivation } = await import("./services/logging/initializeActionLogging")
-	await logExtensionActivation(context, outputChannel)
+	const activationLogger = await logExtensionActivation(context, outputChannel)
 
+	if (activationLogger) {
+		return await activationLogger.run(async () => activateLogic(context, activationLogger))
+	} else {
+		return await activateLogic(context)
+	}
+}
+
+async function activateLogic(context: vscode.ExtensionContext, activationLogger?: ActionLogger) {
 	// Initialize extended logging systems (File Operations, User Interactions)
 	const { initializeLoggingSystems } = await import("./services/logging/loggingInitializer")
 	await initializeLoggingSystems(context, outputChannel)
@@ -394,8 +403,8 @@ export async function activate(context: vscode.ExtensionContext) {
 		}),
 	)
 
-	registerCodeActions(context)
-	registerTerminalActions(context)
+	// Success message
+	outputChannel.appendLine(`[Extension] ${Package.name} v${Package.version} activated successfully`)
 
 	// Allows other extensions to activate once Roo is ready.
 	vscode.commands.executeCommand(`${Package.name}.activationCompleted`)
@@ -403,6 +412,10 @@ export async function activate(context: vscode.ExtensionContext) {
 	// Implements the `RooCodeAPI` interface.
 	const socketPath = process.env.ROO_CODE_IPC_SOCKET_PATH
 	const enableLogging = typeof socketPath === "string"
+
+	// Log that activation is complete
+	const { logActivationCompleted } = await import("./services/logging/helpers/taskLifecycleLogger")
+	await logActivationCompleted()
 
 	// Watch the core files and automatically reload the extension host.
 	if (process.env.NODE_ENV === "development") {

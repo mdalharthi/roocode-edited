@@ -25,19 +25,21 @@ export async function logCreateTask(inputData: { text?: string; hasImages?: bool
 	})
 	await logger.start()
 
-	// Log performance metrics for task creation
-	const metrics = collectSystemMetrics("task_create", "Task")
-	await logOperationPerformance({
-		operation_name: "task_create",
-		operation_type: "task_lifecycle",
-		duration_ms: 0, // Snapshot at creation time
-		resource_source: "task_create",
-		resource_component: "Task",
-		resource_metrics: metrics,
-		additional_metrics: {
-			has_images: inputData.hasImages || false,
-			prompt_length: inputData.text?.length || 0,
-		},
+	// Log performance metrics for task creation within the action context
+	await logger.run(async () => {
+		const metrics = collectSystemMetrics("task_create", "Task")
+		await logOperationPerformance({
+			operation_name: "task_create",
+			operation_type: "task_lifecycle",
+			duration_ms: 0, // Snapshot at creation time
+			resource_source: "task_create",
+			resource_component: "Task",
+			resource_metrics: metrics,
+			additional_metrics: {
+				has_images: inputData.hasImages || false,
+				prompt_length: inputData.text?.length || 0,
+			},
+		})
 	})
 
 	return logger
@@ -54,15 +56,17 @@ export async function logCancelTask(): Promise<ActionLogger> {
 	})
 	await logger.start()
 
-	// Log performance metrics for task cancellation
-	const metrics = collectSystemMetrics("task_cancel", "Task")
-	await logOperationPerformance({
-		operation_name: "task_cancel",
-		operation_type: "task_lifecycle",
-		duration_ms: 0,
-		resource_source: "task_cancel",
-		resource_component: "Task",
-		resource_metrics: metrics,
+	// Log performance metrics for task cancellation within the action context
+	await logger.run(async () => {
+		const metrics = collectSystemMetrics("task_cancel", "Task")
+		await logOperationPerformance({
+			operation_name: "task_cancel",
+			operation_type: "task_lifecycle",
+			duration_ms: 0,
+			resource_source: "task_cancel",
+			resource_component: "Task",
+			resource_metrics: metrics,
+		})
 	})
 
 	return logger
@@ -101,24 +105,27 @@ export async function logTaskFinished(
 		},
 	})
 	await logger.start()
-	await logger.success()
 
-	// Log performance metrics for task completion
-	const metrics = collectSystemMetrics("task_finished", "Task")
-	await logOperationPerformance({
-		operation_name: "task_finished",
-		operation_type: "task_lifecycle",
-		duration_ms: 0, // Duration tracked elsewhere via PerformanceLogger.measure
-		resource_source: "task_finished",
-		resource_component: "Task",
-		resource_metrics: metrics,
-		additional_metrics: {
-			task_id: taskId,
-			result_length: result.length,
-			token_usage: tokenUsage,
-			tool_usage: toolUsage,
-			parent_task_id: parentTaskId,
-		},
+	// Log performance metrics for task completion within the action context
+	await logger.run(async () => {
+		await logger.success()
+
+		const metrics = collectSystemMetrics("task_finished", "Task")
+		await logOperationPerformance({
+			operation_name: "task_finished",
+			operation_type: "task_lifecycle",
+			duration_ms: 0, // Duration tracked elsewhere via PerformanceLogger.measure
+			resource_source: "task_finished",
+			resource_component: "Task",
+			resource_metrics: metrics,
+			additional_metrics: {
+				task_id: taskId,
+				result_length: result.length,
+				token_usage: tokenUsage,
+				tool_usage: toolUsage,
+				parent_task_id: parentTaskId,
+			},
+		})
 	})
 }
 
@@ -135,16 +142,19 @@ export async function logActivationCompleted(): Promise<void> {
 		actionName: "activationCompleted",
 	})
 	await logger.start()
-	await logger.success()
 
-	// Log performance metrics for activation completion
-	const metrics = collectSystemMetrics("activation_completed", "Extension")
-	await logOperationPerformance({
-		operation_name: "activation_completed",
-		operation_type: "extension_lifecycle",
-		duration_ms: 0,
-		resource_source: "activation_completed",
-		resource_component: "Extension",
-		resource_metrics: metrics,
+	// Log performance metrics for activation completion within the action context
+	await logger.run(async () => {
+		await logger.success()
+
+		const metrics = collectSystemMetrics("activation_completed", "Extension")
+		await logOperationPerformance({
+			operation_name: "activation_completed",
+			operation_type: "extension_lifecycle",
+			duration_ms: 0,
+			resource_source: "activation_completed",
+			resource_component: "Extension",
+			resource_metrics: metrics,
+		})
 	})
 }
