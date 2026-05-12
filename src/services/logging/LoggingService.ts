@@ -31,7 +31,10 @@ import BackendLoggingClient, {
 	UserInteractionLogData,
 	FileOperationLogData,
 	ApiProviderData,
+	McpLogData,
 } from "./BackendLoggingClient"
+
+import { actionLogContext } from "./actionContext"
 
 interface LoggingServiceConfig {
 	apiUrl: string
@@ -54,6 +57,13 @@ export class LoggingService {
 
 	private readonly BATCH_SIZE = 10
 	private readonly FLUSH_INTERVAL_MS = 5000
+
+	/**
+	 * Get the currently active action log ID from context
+	 */
+	public getActiveActionLogId(): number | null {
+		return actionLogContext.getStore() || null
+	}
 
 	private constructor(config: LoggingServiceConfig) {
 		this.config = {
@@ -201,6 +211,7 @@ export class LoggingService {
 			() =>
 				this.client.createApiLog({
 					session_id: data.session_id || this.config.sessionId,
+					action_log_id: data.action_log_id || this.getActiveActionLogId(),
 					...data,
 				} as ApiLogData),
 			"logApiCall",
@@ -217,6 +228,7 @@ export class LoggingService {
 			() =>
 				this.client.createPerformanceLog({
 					session_id: data.session_id || this.config.sessionId,
+					action_log_id: data.action_log_id || this.getActiveActionLogId(),
 					...data,
 				} as PerformanceLogData),
 			"logPerformance",
@@ -235,6 +247,7 @@ export class LoggingService {
 				this.client.createUserInteractionLog({
 					session_id: data.session_id || this.config.sessionId,
 					user_id: data.user_id || this.config.userId,
+					action_log_id: data.action_log_id || this.getActiveActionLogId(),
 					...data,
 				} as UserInteractionLogData),
 			"logUserInteraction",
@@ -251,9 +264,27 @@ export class LoggingService {
 			() =>
 				this.client.createFileOperationLog({
 					session_id: data.session_id || this.config.sessionId,
+					action_log_id: data.action_log_id || this.getActiveActionLogId(),
 					...data,
 				} as FileOperationLogData),
 			"logFileOperation",
+		)
+	}
+
+	/**
+	 * Log MCP interaction
+	 */
+	public async logMcpCall(
+		data: Omit<McpLogData, "session_id"> & Partial<Pick<McpLogData, "session_id">>,
+	): Promise<void> {
+		await this.safeLog(
+			() =>
+				this.client.createMcpLog({
+					session_id: data.session_id || this.config.sessionId,
+					action_log_id: data.action_log_id || this.getActiveActionLogId(),
+					...data,
+				} as McpLogData),
+			"logMcpCall",
 		)
 	}
 
@@ -329,6 +360,7 @@ export class LoggingService {
 				performance_logs: [],
 				user_interaction_logs: [],
 				file_operation_logs: [],
+				mcp_logs: [],
 			}
 
 			for (const item of batchToSend) {
@@ -347,6 +379,9 @@ export class LoggingService {
 						break
 					case "file_operation":
 						batchData.file_operation_logs.push(item.data)
+						break
+					case "mcp":
+						batchData.mcp_logs.push(item.data)
 						break
 				}
 			}

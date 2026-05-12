@@ -114,12 +114,26 @@ export interface FileOperationLogData {
 	content_type?: string
 }
 
+export interface McpLogData {
+	session_id: string
+	action_log_id?: number
+	server_name: string
+	request_type: string
+	endpoint?: string
+	request_data?: any
+	response_data?: any
+	status_code?: number
+	error_message?: string
+	duration_ms?: number
+}
+
 export interface BatchLogData {
 	action_logs?: ActionLogData[]
 	api_logs?: ApiLogData[]
 	performance_logs?: PerformanceLogData[]
 	user_interaction_logs?: UserInteractionLogData[]
 	file_operation_logs?: FileOperationLogData[]
+	mcp_logs?: McpLogData[]
 }
 
 export interface LogListResponse<T> {
@@ -135,6 +149,7 @@ export interface BatchLogResponse {
 	performance_logs_created: number
 	user_interaction_logs_created: number
 	file_operation_logs_created: number
+	mcp_logs_created: number
 	total_created: number
 	errors: string[]
 	id_map?: Record<number, number>
@@ -348,6 +363,37 @@ export class BackendLoggingClient {
 		params.append("offset", offset.toString())
 
 		return this.request(`/logs/file-operations?${params.toString()}`, "GET")
+	}
+
+	// ========================================
+	// MCP LOGS
+	// ========================================
+
+	/**
+	 * Create a new MCP log entry
+	 */
+	async createMcpLog(data: McpLogData): Promise<any> {
+		return this.request("/logs/mcp", "POST", data)
+	}
+
+	/**
+	 * List MCP logs with optional filtering
+	 */
+	async listMcpLogs(
+		sessionId?: string,
+		serverName?: string,
+		requestType?: string,
+		limit = 50,
+		offset = 0,
+	): Promise<LogListResponse<any>> {
+		const params = new URLSearchParams()
+		if (sessionId) params.append("session_id", sessionId)
+		if (serverName) params.append("server_name", serverName)
+		if (requestType) params.append("request_type", requestType)
+		params.append("limit", limit.toString())
+		params.append("offset", offset.toString())
+
+		return this.request(`/logs/mcp?${params.toString()}`, "GET")
 	}
 
 	// ========================================

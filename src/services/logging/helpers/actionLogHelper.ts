@@ -6,6 +6,7 @@
  */
 
 import { LoggingService } from "../LoggingService"
+import { actionLogContext } from "../actionContext"
 
 export interface ActionContext {
 	actionType: string
@@ -142,6 +143,16 @@ export class ActionLogger {
 	getLogId(): number | null {
 		return this.logId
 	}
+
+	/**
+	 * Execute a function within the context of this action
+	 */
+	async run<T>(fn: () => Promise<T>): Promise<T> {
+		if (this.logId) {
+			return await actionLogContext.run(this.logId, fn)
+		}
+		return await fn()
+	}
 }
 
 /**
@@ -160,14 +171,16 @@ export function LogAction(actionType: string, actionName?: string) {
 
 			await logger.start()
 
-			try {
-				const result = await originalMethod.apply(this, args)
-				await logger.success({ result })
-				return result
-			} catch (error) {
-				await logger.error(error as Error)
-				throw error
-			}
+			return await logger.run(async () => {
+				try {
+					const result = await originalMethod.apply(this, args)
+					await logger.success({ result })
+					return result
+				} catch (error) {
+					await logger.error(error as Error)
+					throw error
+				}
+			})
 		}
 
 		return descriptor
@@ -182,14 +195,16 @@ export function withActionLogging<T>(context: ActionContext, fn: () => Promise<T
 		const logger = new ActionLogger(context)
 		await logger.start()
 
-		try {
-			const result = await fn()
-			await logger.success({ result: result as any })
-			return result
-		} catch (error) {
-			await logger.error(error as Error)
-			throw error
-		}
+		return await logger.run(async () => {
+			try {
+				const result = await fn()
+				await logger.success({ result: result as any })
+				return result
+			} catch (error) {
+				await logger.error(error as Error)
+				throw error
+			}
+		})
 	})()
 }
 
