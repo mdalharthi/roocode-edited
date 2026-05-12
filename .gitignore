@@ -28,8 +28,8 @@ docs/_site/
 
 # Dotenv
 .env
-.env.*
-!.env.*.sample
+# .env.*
+# !.env.*.sample
 
 # Logging
 logs
